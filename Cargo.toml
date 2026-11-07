@@ -1,0 +1,33 @@
+[package]
+name = "ctermin"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal native Windows dengan SSH manager, split pane, dan integrasi AI"
+
+[workspace]
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+anyhow = "1.0.104"
+# Hanya renderer glow: wgpu memakai RAM jauh lebih besar dari target < 50MB.
+# wayland/x11 tidak relevan karena aplikasi ini khusus Windows.
+eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
+keyring = "4.2.0"
+portable-pty = "0.9.0"
+# native-tls = schannel Windows: binary lebih kecil, tanpa cmake, dan memakai cert store sistem.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+toml = "1.2.1"
+
+[lints.clippy]
+# Aturan gaya kode di CLAUDE.md. `cargo clippy -- -D warnings` menjadikannya error.
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+# Target binary < 15MB.
+lto = true
+codegen-units = 1
+strip = true

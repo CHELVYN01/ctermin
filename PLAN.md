@@ -18,12 +18,12 @@ Target: ringan (RAM < 50MB untuk 1 tab, binary < 15MB), cepat, stabil.
 **Selesai jika:** `cargo run` membuka jendela kosong.
 
 ## Fase 1 - Terminal Dasar
-- [ ] Spawn PowerShell via portable-pty (ConPTY)
-- [ ] Baca output PTY di thread terpisah, kirim ke alacritty_terminal
-- [ ] Render grid karakter + warna + kursor di egui
-- [ ] Kirim input keyboard ke PTY (termasuk Ctrl, Alt, panah)
-- [ ] Resize terminal mengikuti ukuran jendela
-- [ ] Copy/paste dan scrollback
+- [x] Spawn PowerShell via portable-pty (ConPTY)
+- [x] Baca output PTY di thread terpisah, kirim ke alacritty_terminal
+- [x] Render grid karakter + warna + kursor di egui
+- [x] Kirim input keyboard ke PTY (termasuk Ctrl, Alt, panah)
+- [x] Resize terminal mengikuti ukuran jendela
+- [x] Copy/paste dan scrollback
 
 **Selesai jika:** `dir`, `git status`, `vim`, `htop` (via WSL) tampil benar.
 

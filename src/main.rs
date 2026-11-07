@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod terminal;
 
 use anyhow::anyhow;
 use app::CterminApp;
@@ -16,6 +17,10 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native("ctermin", options, Box::new(|_cc| Ok(Box::new(CterminApp))))
-        .map_err(|err| anyhow!("Gagal membuka jendela ctermin: {err}"))
+    eframe::run_native(
+        "ctermin",
+        options,
+        Box::new(|cc| Ok(Box::new(CterminApp::new(&cc.egui_ctx)))),
+    )
+    .map_err(|err| anyhow!("Gagal membuka jendela ctermin: {err}"))
 }

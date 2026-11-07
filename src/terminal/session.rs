@@ -24,6 +24,8 @@ use super::pty::{Notify, Pty, PtyEvent};
 const MAX_BYTES_PER_PUMP: usize = 1024 * 1024;
 const MIN_COLUMNS: usize = 2;
 const MIN_LINES: usize = 1;
+const MAX_TITLE_CHARS: usize = 256;
+const EXE_SUFFIX: &str = ".exe";
 
 /// Ukuran grid dalam sel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,10 +85,14 @@ pub struct TerminalSession {
     size: GridSize,
     cell_pixels: (u16, u16),
     exited: bool,
+    /// Nama program, dipakai sebagai judul selama aplikasi belum mengirim judul sendiri.
+    program: String,
+    title: Option<String>,
 }
 
 impl TerminalSession {
     pub fn spawn(command: CommandBuilder, size: GridSize, notify: Notify) -> Result<Self> {
+        let program = program_name(&command);
         let pty = Pty::spawn(command, size.to_pty_size(), notify)?;
         let (event_tx, term_events) = mpsc::channel();
         Ok(Self {
@@ -98,7 +104,13 @@ impl TerminalSession {
             size,
             cell_pixels: (0, 0),
             exited: false,
+            program,
+            title: None,
         })
+    }
+
+    pub fn title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.program)
     }
 
     /// Memproses output yang sudah tiba. Mengembalikan kapan frame berikutnya dibutuhkan
@@ -227,6 +239,8 @@ impl TerminalSession {
                     });
                     self.pty.write(reply.into_bytes());
                 }
+                Event::Title(title) => self.title = clean_title(&title),
+                Event::ResetTitle => self.title = None,
                 _ => {}
             }
         }
@@ -243,6 +257,56 @@ impl TerminalSession {
         } else {
             Some(deadline - now)
         }
+    }
+
+    #[cfg(test)]
+    pub fn screen_text(&self) -> String {
+        self.term.grid().display_iter().map(|cell| cell.c).collect()
+    }
+
+    #[cfg(test)]
+    pub fn threads_alive(&self) -> std::sync::Weak<()> {
+        self.pty.threads_alive()
+    }
+}
+
+/// Nama file program tanpa folder dan ekstensi.
+fn program_name(command: &CommandBuilder) -> String {
+    command
+        .get_argv()
+        .first()
+        .map(|program| executable_name(&program.to_string_lossy()))
+        .unwrap_or_default()
+}
+
+fn executable_name(path: &str) -> String {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    match file.len().checked_sub(EXE_SUFFIX.len()) {
+        Some(stem)
+            if file.is_char_boundary(stem) && file[stem..].eq_ignore_ascii_case(EXE_SUFFIX) =>
+        {
+            file[..stem].to_owned()
+        }
+        _ => file.to_owned(),
+    }
+}
+
+/// Merapikan judul dari aplikasi. Judul bisa datang dari server jauh, jadi karakter kontrol
+/// dibuang dan panjangnya dibatasi. ConPTY mengirim path lengkap shell, yang cukup ditampilkan
+/// sebagai nama programnya.
+fn clean_title(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_TITLE_CHARS)
+        .collect();
+    let title = cleaned.trim();
+    if title.is_empty() {
+        None
+    } else if title.to_ascii_lowercase().ends_with(EXE_SUFFIX) {
+        Some(executable_name(title))
+    } else {
+        Some(title.to_owned())
     }
 }
 
@@ -263,12 +327,48 @@ pub(super) mod tests {
     }
 
     pub fn screen_text(session: &TerminalSession) -> String {
-        session
-            .term
-            .grid()
-            .display_iter()
-            .map(|cell| cell.c)
-            .collect()
+        session.screen_text()
+    }
+
+    #[test]
+    fn judul_awal_adalah_nama_program() {
+        let session = spawn(&["/c", "exit 0"]);
+        assert_eq!(session.title(), "cmd");
+    }
+
+    #[test]
+    fn judul_dari_aplikasi_dipakai() {
+        let mut session = spawn(&["/k", "title judul-tes"]);
+        pump_until(&mut session, |s| s.title().contains("judul-tes"));
+    }
+
+    #[test]
+    fn nama_program_dari_path() {
+        let path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        assert_eq!(executable_name(path), "powershell");
+        assert_eq!(executable_name("cmd.EXE"), "cmd");
+        assert_eq!(executable_name("/usr/bin/ssh"), "ssh");
+        assert_eq!(executable_name("ssh"), "ssh");
+        assert_eq!(executable_name("é.exe"), "é");
+    }
+
+    #[test]
+    fn judul_dirapikan() {
+        assert_eq!(
+            clean_title(r"C:\WINDOWS\system32\cmd.exe").as_deref(),
+            Some("cmd")
+        );
+        assert_eq!(
+            clean_title(r"Cargo.toml (D:\Project) - VIM").as_deref(),
+            Some(r"Cargo.toml (D:\Project) - VIM")
+        );
+        assert_eq!(clean_title("a\x1b[31m\x07b\n").as_deref(), Some("a[31mb"));
+        assert_eq!(clean_title("  \x07 "), None);
+        let long = "x".repeat(MAX_TITLE_CHARS + 50);
+        assert_eq!(
+            clean_title(&long).map(|title| title.chars().count()),
+            Some(MAX_TITLE_CHARS)
+        );
     }
 
     pub fn pump_until(session: &mut TerminalSession, done: impl Fn(&TerminalSession) -> bool) {

@@ -28,10 +28,10 @@ Target: ringan (RAM < 50MB untuk 1 tab, binary < 15MB), cepat, stabil.
 **Selesai jika:** `dir`, `git status`, `vim`, `htop` (via WSL) tampil benar.
 
 ## Fase 2 - Tab
-- [ ] Buat, tutup, dan pindah tab
-- [ ] Shortcut: Ctrl+T (baru), Ctrl+W (tutup), Ctrl+Tab (pindah)
-- [ ] Judul tab otomatis (nama shell/server)
-- [ ] Proses PTY dimatikan dengan benar saat tab ditutup
+- [x] Buat, tutup, dan pindah tab
+- [x] Shortcut: Ctrl+T (baru), Ctrl+W (tutup), Ctrl+Tab (pindah)
+- [x] Judul tab otomatis (nama shell/server)
+- [x] Proses PTY dimatikan dengan benar saat tab ditutup
 
 **Selesai jika:** 5+ tab berjalan bersamaan tanpa bocor memori/thread.
 

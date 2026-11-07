@@ -6,8 +6,8 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CursorShape, NamedColor, Rgb};
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CursorIcon, Event, FontId, Key, Modifiers, MouseWheelUnit,
-    Painter, Pos2, Rect, Sense, Stroke, StrokeKind, ViewportCommand,
+    self, pos2, vec2, Align2, Color32, CursorIcon, Event, EventFilter, FontId, Key, Modifiers,
+    MouseWheelUnit, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, ViewportCommand,
 };
 
 use super::colors::SELECTION;
@@ -46,6 +46,7 @@ impl TerminalView {
         let response = ui
             .allocate_rect(rect, Sense::click_and_drag())
             .on_hover_cursor(CursorIcon::Text);
+        keep_keyboard_focus(ui, &response);
         let grid_rect = rect.shrink(PADDING);
         let metrics = self.cell_metrics(ui.ctx());
 
@@ -241,6 +242,19 @@ impl TerminalView {
             focused,
         );
     }
+}
+
+/// Tab, panah, dan Escape adalah milik proses di terminal, bukan navigasi fokus egui. Tanpa ini,
+/// Tab memindahkan fokus ke tombol bilah tab lalu Enter ikut menekan tombol itu.
+fn keep_keyboard_focus(ui: &egui::Ui, response: &egui::Response) {
+    response.request_focus();
+    let filter = EventFilter {
+        tab: true,
+        horizontal_arrows: true,
+        vertical_arrows: true,
+        escape: true,
+    };
+    ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
 }
 
 /// Shortcut milik aplikasi didahulukan, sisanya diteruskan ke proses di terminal.

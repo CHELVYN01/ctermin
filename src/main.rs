@@ -2,7 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod layout;
 mod terminal;
+mod ui;
 
 use anyhow::anyhow;
 use app::CterminApp;

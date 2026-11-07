@@ -9,6 +9,7 @@ use crate::config::settings::{
 use crate::ssh::command::is_safe_ssh_value;
 use crate::ssh::model::{AuthMethod, Folder, FolderId, Server, ServerId, DEFAULT_PORT};
 use crate::terminal::{ColorScheme, ShellKind, TerminalFont};
+use crate::ui::theme;
 
 const FIELD_WIDTH: f32 = 260.0;
 const CUSTOM_MODEL_LABEL: &str = "Other...";
@@ -171,8 +172,11 @@ impl FolderForm {
 
 fn buttons(ui: &mut egui::Ui, confirm_label: &str) -> DialogResult {
     let mut result = DialogResult::Open;
-    ui.horizontal(|ui| {
-        if ui.button(confirm_label).clicked() {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if theme::primary_button(ui, confirm_label).clicked() {
             result = DialogResult::Confirmed;
         }
         if ui.button("Cancel").clicked() {
@@ -204,72 +208,75 @@ pub fn show_server_form(
         } else {
             "Add server"
         };
-        ui.heading(title);
+        theme::title(ui, title);
         ui.add_space(6.0);
 
-        Grid::new("server_form").num_columns(2).show(ui, |ui| {
-            ui.label("Name");
-            text_field(ui, &mut form.name);
-            ui.end_row();
+        Grid::new("server_form")
+            .num_columns(2)
+            .spacing([14.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Name");
+                text_field(ui, &mut form.name);
+                ui.end_row();
 
-            ui.label("Host");
-            text_field(ui, &mut form.host);
-            ui.end_row();
+                ui.label("Host");
+                text_field(ui, &mut form.host);
+                ui.end_row();
 
-            ui.label("Port");
-            text_field(ui, &mut form.port);
-            ui.end_row();
+                ui.label("Port");
+                text_field(ui, &mut form.port);
+                ui.end_row();
 
-            ui.label("Username");
-            text_field(ui, &mut form.username);
-            ui.end_row();
+                ui.label("Username");
+                text_field(ui, &mut form.username);
+                ui.end_row();
 
-            ui.label("Folder");
-            let selected = form
-                .folder
-                .and_then(|id| folders.iter().find(|folder| folder.id == id))
-                .map_or("No folder", |folder| folder.name.as_str());
-            ComboBox::from_id_salt("server_folder")
-                .width(FIELD_WIDTH)
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut form.folder, None, "No folder");
-                    for folder in folders {
-                        ui.selectable_value(&mut form.folder, Some(folder.id), &folder.name);
-                    }
+                ui.label("Folder");
+                let selected = form
+                    .folder
+                    .and_then(|id| folders.iter().find(|folder| folder.id == id))
+                    .map_or("No folder", |folder| folder.name.as_str());
+                ComboBox::from_id_salt("server_folder")
+                    .width(FIELD_WIDTH)
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut form.folder, None, "No folder");
+                        for folder in folders {
+                            ui.selectable_value(&mut form.folder, Some(folder.id), &folder.name);
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("Login");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut form.use_password, false, "SSH key");
+                    ui.radio_value(&mut form.use_password, true, "Password");
                 });
-            ui.end_row();
+                ui.end_row();
 
-            ui.label("Login");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut form.use_password, false, "SSH key");
-                ui.radio_value(&mut form.use_password, true, "Password");
-            });
-            ui.end_row();
-
-            if form.use_password {
-                ui.label("Password");
-                let hint = if form.has_saved_password {
-                    "Leave empty to keep it"
+                if form.use_password {
+                    ui.label("Password");
+                    let hint = if form.has_saved_password {
+                        "Leave empty to keep it"
+                    } else {
+                        "Leave empty to type it at login"
+                    };
+                    ui.add(
+                        TextEdit::singleline(&mut form.password)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(FIELD_WIDTH),
+                    );
                 } else {
-                    "Leave empty to type it at login"
-                };
-                ui.add(
-                    TextEdit::singleline(&mut form.password)
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(FIELD_WIDTH),
-                );
-            } else {
-                ui.label("Key file");
-                ui.add(
-                    TextEdit::singleline(&mut form.identity_file)
-                        .hint_text("Leave empty for the default key")
-                        .desired_width(FIELD_WIDTH),
-                );
-            }
-            ui.end_row();
-        });
+                    ui.label("Key file");
+                    ui.add(
+                        TextEdit::singleline(&mut form.identity_file)
+                            .hint_text("Leave empty for the default key")
+                            .desired_width(FIELD_WIDTH),
+                    );
+                }
+                ui.end_row();
+            });
 
         ui.add_space(6.0);
         show_error(ui, form.error.as_deref());
@@ -285,7 +292,7 @@ pub fn show_folder_form(ctx: &egui::Context, id: Id, form: &mut FolderForm) -> D
         } else {
             "Add folder"
         };
-        ui.heading(title);
+        theme::title(ui, title);
         ui.add_space(6.0);
         text_field(ui, &mut form.name);
         ui.add_space(6.0);
@@ -414,56 +421,62 @@ fn model_picker(ui: &mut egui::Ui, form: &mut AiSettingsForm) {
 
 pub fn show_ai_settings(ctx: &egui::Context, id: Id, form: &mut AiSettingsForm) -> DialogResult {
     let response = Modal::new(id).show(ctx, |ui| {
-        ui.heading("AI Settings");
+        theme::title(ui, "AI Settings");
         ui.add_space(6.0);
         ui.radio_value(
             &mut form.provider,
             ProviderKind::ClaudeCode,
             "Claude Code (subscription quota)",
         );
-        ui.small("Uses the Claude Code already signed in on this computer.");
+        theme::hint(
+            ui,
+            "Uses the Claude Code already signed in on this computer.",
+        );
         ui.radio_value(&mut form.provider, ProviderKind::ApiKey, "Claude API key");
-        ui.small("Pay per use, separate from your subscription.");
+        theme::hint(ui, "Pay per use, separate from your subscription.");
         form.sync_provider();
         ui.add_space(6.0);
 
-        Grid::new("ai_settings").num_columns(2).show(ui, |ui| {
-            ui.label("Model");
-            model_picker(ui, form);
-            ui.end_row();
-
-            if form.custom_model {
-                ui.label("Model name");
-                ui.add(
-                    TextEdit::singleline(&mut form.model)
-                        .hint_text("Model name or ID")
-                        .desired_width(FIELD_WIDTH),
-                );
-                ui.end_row();
-            }
-
-            if form.provider == ProviderKind::ApiKey {
-                ui.label("API key");
-                let hint = if form.has_saved_key {
-                    "Leave empty to keep it"
-                } else {
-                    "Stored in Credential Manager"
-                };
-                ui.add(
-                    TextEdit::singleline(&mut form.api_key)
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(FIELD_WIDTH),
-                );
+        Grid::new("ai_settings")
+            .num_columns(2)
+            .spacing([14.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Model");
+                model_picker(ui, form);
                 ui.end_row();
 
-                if form.has_saved_key {
-                    ui.label("");
-                    ui.checkbox(&mut form.delete_key, "Delete saved API key");
+                if form.custom_model {
+                    ui.label("Model name");
+                    ui.add(
+                        TextEdit::singleline(&mut form.model)
+                            .hint_text("Model name or ID")
+                            .desired_width(FIELD_WIDTH),
+                    );
                     ui.end_row();
                 }
-            }
-        });
+
+                if form.provider == ProviderKind::ApiKey {
+                    ui.label("API key");
+                    let hint = if form.has_saved_key {
+                        "Leave empty to keep it"
+                    } else {
+                        "Stored in Credential Manager"
+                    };
+                    ui.add(
+                        TextEdit::singleline(&mut form.api_key)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(FIELD_WIDTH),
+                    );
+                    ui.end_row();
+
+                    if form.has_saved_key {
+                        ui.label("");
+                        ui.checkbox(&mut form.delete_key, "Delete saved API key");
+                        ui.end_row();
+                    }
+                }
+            });
 
         ui.add_space(6.0);
         show_error(ui, form.error.as_deref());
@@ -494,68 +507,71 @@ impl SettingsForm {
 
 pub fn show_settings(ctx: &egui::Context, id: Id, form: &mut SettingsForm) -> DialogResult {
     let response = Modal::new(id).show(ctx, |ui| {
-        ui.heading("Settings");
+        theme::title(ui, "Settings");
         ui.add_space(6.0);
 
-        Grid::new("settings").num_columns(2).show(ui, |ui| {
-            ui.label("Color scheme");
-            ComboBox::from_id_salt("color_scheme")
-                .width(FIELD_WIDTH)
-                .selected_text(form.appearance.color_scheme.label())
-                .show_ui(ui, |ui| {
-                    for scheme in ColorScheme::ALL {
-                        ui.selectable_value(
-                            &mut form.appearance.color_scheme,
-                            scheme,
-                            scheme.label(),
-                        );
-                    }
-                });
-            ui.end_row();
+        Grid::new("settings")
+            .num_columns(2)
+            .spacing([14.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Color scheme");
+                ComboBox::from_id_salt("color_scheme")
+                    .width(FIELD_WIDTH)
+                    .selected_text(form.appearance.color_scheme.label())
+                    .show_ui(ui, |ui| {
+                        for scheme in ColorScheme::ALL {
+                            ui.selectable_value(
+                                &mut form.appearance.color_scheme,
+                                scheme,
+                                scheme.label(),
+                            );
+                        }
+                    });
+                ui.end_row();
 
-            ui.label("Font");
-            ComboBox::from_id_salt("font")
-                .width(FIELD_WIDTH)
-                .selected_text(form.appearance.font.label())
-                .show_ui(ui, |ui| {
-                    for font in TerminalFont::ALL {
-                        ui.selectable_value(&mut form.appearance.font, font, font.label());
-                    }
-                });
-            ui.end_row();
+                ui.label("Font");
+                ComboBox::from_id_salt("font")
+                    .width(FIELD_WIDTH)
+                    .selected_text(form.appearance.font.label())
+                    .show_ui(ui, |ui| {
+                        for font in TerminalFont::ALL {
+                            ui.selectable_value(&mut form.appearance.font, font, font.label());
+                        }
+                    });
+                ui.end_row();
 
-            ui.label("Font size");
-            ui.add(egui::Slider::new(
-                &mut form.appearance.font_size,
-                MIN_FONT_SIZE..=MAX_FONT_SIZE,
-            ));
-            ui.end_row();
+                ui.label("Font size");
+                ui.add(egui::Slider::new(
+                    &mut form.appearance.font_size,
+                    MIN_FONT_SIZE..=MAX_FONT_SIZE,
+                ));
+                ui.end_row();
 
-            ui.label("Default shell");
-            ComboBox::from_id_salt("default_shell")
-                .width(FIELD_WIDTH)
-                .selected_text(form.terminal.default_shell.label())
-                .show_ui(ui, |ui| {
-                    for shell in &form.shells {
-                        ui.selectable_value(
-                            &mut form.terminal.default_shell,
-                            *shell,
-                            shell.label(),
-                        );
-                    }
-                });
-            ui.end_row();
+                ui.label("Default shell");
+                ComboBox::from_id_salt("default_shell")
+                    .width(FIELD_WIDTH)
+                    .selected_text(form.terminal.default_shell.label())
+                    .show_ui(ui, |ui| {
+                        for shell in &form.shells {
+                            ui.selectable_value(
+                                &mut form.terminal.default_shell,
+                                *shell,
+                                shell.label(),
+                            );
+                        }
+                    });
+                ui.end_row();
 
-            ui.label("Startup");
-            ui.checkbox(
-                &mut form.terminal.restore_session,
-                "Restore last tabs and splits",
-            );
-            ui.end_row();
-        });
+                ui.label("Startup");
+                ui.checkbox(
+                    &mut form.terminal.restore_session,
+                    "Restore last tabs and splits",
+                );
+                ui.end_row();
+            });
 
         ui.add_space(6.0);
-        ui.small(format!("Shortcuts are edited in {}", form.config_path));
+        theme::hint(ui, format!("Shortcuts are edited in {}", form.config_path));
         ui.add_space(6.0);
         buttons(ui, "Save")
     });

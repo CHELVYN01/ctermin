@@ -62,20 +62,28 @@ impl Sidebar {
         let inner = rect.shrink(MARGIN);
         let builder = egui::UiBuilder::new().max_rect(inner);
         ui.scope_builder(builder, |ui| {
+            ui.add_space(2.0);
+            ui.label(RichText::new("SERVERS").small().strong().weak());
+            ui.add_space(2.0);
+            let button_width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Server").strong());
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui.small_button("+ Server").clicked() {
+                let size = vec2(button_width, 26.0);
+                if ui.add_sized(size, egui::Button::new("+ Server")).clicked() {
                     action = Some(SidebarAction::AddServer(None));
                 }
-                if ui.small_button("+ Folder").clicked() {
+                if ui.add_sized(size, egui::Button::new("+ Folder")).clicked() {
                     action = Some(SidebarAction::AddFolder);
                 }
-                if ui.small_button("Import").clicked() {
-                    action = Some(SidebarAction::Import);
-                }
             });
+            if ui
+                .add_sized(
+                    vec2(ui.available_width(), 24.0),
+                    egui::Button::new("Import from ~/.ssh/config"),
+                )
+                .clicked()
+            {
+                action = Some(SidebarAction::Import);
+            }
             if let Some(notice) = notice {
                 ui.small(notice);
             }

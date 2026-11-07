@@ -6,3 +6,4 @@ pub mod shortcuts;
 pub mod sidebar;
 pub mod split_view;
 pub mod tab_bar;
+pub mod theme;

@@ -89,6 +89,7 @@ impl CterminApp {
         session_file: SessionFile,
     ) -> Self {
         ctx.set_theme(egui::Theme::Dark);
+        crate::ui::theme::apply(ctx);
         // Ctrl+Plus and Ctrl+Minus must reach the terminal, not change egui's zoom.
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let (keymap, invalid_shortcuts) = Keymap::from_settings(&config.data.shortcuts);
@@ -1735,7 +1736,7 @@ mod tests {
         harness.frame(Vec::new());
 
         // The server row sits below the header and buttons; search for it from the top down.
-        let mut y = 40.0;
+        let mut y = 120.0;
         while harness.count() == 1 && y < 300.0 {
             harness.click(pos2(60.0, y));
             y += 6.0;

@@ -41,12 +41,22 @@ impl TerminalView {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, session: &mut TerminalSession) {
+    /// Menggambar satu panel. `id` harus tetap sama untuk panel yang sama selama layout berubah.
+    /// Mengembalikan `true` jika user menekan mouse pada panel ini.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        session: &mut TerminalSession,
+        keyboard_focus: bool,
+    ) -> bool {
         let rect = ui.max_rect();
         let response = ui
-            .allocate_rect(rect, Sense::click_and_drag())
+            .interact(rect, id, Sense::click_and_drag())
             .on_hover_cursor(CursorIcon::Text);
-        keep_keyboard_focus(ui, &response);
+        if keyboard_focus {
+            keep_keyboard_focus(ui, &response);
+        }
         let grid_rect = rect.shrink(PADDING);
         let metrics = self.cell_metrics(ui.ctx());
 
@@ -58,12 +68,13 @@ impl TerminalView {
             (metrics.width as u16, metrics.height as u16),
         );
 
-        self.handle_events(ui.ctx(), session, metrics);
+        self.handle_events(ui.ctx(), &response, session, metrics, keyboard_focus);
         handle_selection(&response, session, grid_rect.min, metrics);
 
-        let focused = ui.input(|input| input.focused);
+        let focused = keyboard_focus && ui.input(|input| input.focused);
         let painter = ui.painter_at(rect);
         self.paint(&painter, rect, grid_rect.min, metrics, session, focused);
+        response.is_pointer_button_down_on()
     }
 
     fn cell_metrics(&self, ctx: &egui::Context) -> CellMetrics {
@@ -84,30 +95,21 @@ impl TerminalView {
     fn handle_events(
         &mut self,
         ctx: &egui::Context,
+        response: &egui::Response,
         session: &mut TerminalSession,
         metrics: CellMetrics,
+        keyboard_focus: bool,
     ) {
         let (events, modifiers) = ctx.input(|input| (input.events.clone(), input.modifiers));
         for event in events {
             match event {
-                // Dengan Alt, byte-nya sudah dikirim dari event Key sebagai ESC + karakter.
-                Event::Text(text) if !modifiers.alt => session.send_input(text.into_bytes()),
-                Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => handle_key(ctx, session, key, modifiers),
-                // egui menelan Ctrl+C dan Ctrl+X sebagai event clipboard.
-                Event::Copy => match session.take_selection() {
-                    Some(text) => ctx.copy_text(text),
-                    None => session.send_input(vec![INTERRUPT]),
-                },
-                Event::Cut => session.send_input(vec![CUT_CONTROL]),
-                Event::Paste(text) => session.paste(&text),
+                // Roda mouse untuk panel di bawah pointer, walaupun panel itu tidak fokus.
                 Event::MouseWheel { unit, delta, .. } => {
-                    self.handle_wheel(session, unit, delta.y, metrics);
+                    if response.contains_pointer() {
+                        self.handle_wheel(session, unit, delta.y, metrics);
+                    }
                 }
+                event if keyboard_focus => handle_keyboard(ctx, session, event, modifiers),
                 _ => {}
             }
         }
@@ -255,6 +257,32 @@ fn keep_keyboard_focus(ui: &egui::Ui, response: &egui::Response) {
         escape: true,
     };
     ui.memory_mut(|memory| memory.set_focus_lock_filter(response.id, filter));
+}
+
+fn handle_keyboard(
+    ctx: &egui::Context,
+    session: &mut TerminalSession,
+    event: Event,
+    modifiers: Modifiers,
+) {
+    match event {
+        // Dengan Alt, byte-nya sudah dikirim dari event Key sebagai ESC + karakter.
+        Event::Text(text) if !modifiers.alt => session.send_input(text.into_bytes()),
+        Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } => handle_key(ctx, session, key, modifiers),
+        // egui menelan Ctrl+C dan Ctrl+X sebagai event clipboard.
+        Event::Copy => match session.take_selection() {
+            Some(text) => ctx.copy_text(text),
+            None => session.send_input(vec![INTERRUPT]),
+        },
+        Event::Cut => session.send_input(vec![CUT_CONTROL]),
+        Event::Paste(text) => session.paste(&text),
+        _ => {}
+    }
 }
 
 /// Shortcut milik aplikasi didahulukan, sisanya diteruskan ke proses di terminal.
@@ -487,7 +515,10 @@ mod tests {
                 ..RawInput::default()
             };
             let (view, session) = (&mut self.view, &mut self.session);
-            let mut output = self.ctx.run_ui(input, |ui| view.show(ui, session));
+            let mut output = self.ctx.run_ui(input, |ui| {
+                let id = ui.scope_id().with("panel");
+                view.show(ui, id, session, true);
+            });
             output.textures_delta.clear();
             output
         }
@@ -586,6 +617,7 @@ mod tests {
     fn roda_mouse_menggulir_riwayat() {
         let mut harness = Harness::new(&["/k", "for /L %i in (1,1,100) do @echo baris-%i"]);
         harness.wait_for("baris-100");
+        harness.frame(vec![Event::PointerMoved(pos2(200.0, 200.0))]);
         harness.frame(vec![Event::MouseWheel {
             unit: MouseWheelUnit::Line,
             delta: vec2(0.0, 1.0),

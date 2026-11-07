@@ -36,13 +36,14 @@ Target: ringan (RAM < 50MB untuk 1 tab, binary < 15MB), cepat, stabil.
 **Selesai jika:** 5+ tab berjalan bersamaan tanpa bocor memori/thread.
 
 ## Fase 3 - Split Pane
-- [ ] Layout disimpan sebagai tree (Split / Leaf)
-- [ ] Split kanan-kiri (Ctrl+Shift+D)
-- [ ] Split atas-bawah (Ctrl+Shift+E)
-- [ ] Split bertingkat
-- [ ] Pindah fokus antar panel (Alt+Panah)
-- [ ] Drag pembatas untuk ubah ukuran
-- [ ] Tutup panel tanpa merusak layout
+- [x] Layout disimpan sebagai tree (Split / Leaf)
+- [x] Split kanan-kiri (Ctrl+Shift+D)
+- [x] Split atas-bawah (Ctrl+Shift+E)
+- [x] Split bertingkat
+- [x] Pindah fokus antar panel (Alt+Panah)
+- [x] Drag pembatas untuk ubah ukuran
+- [x] Tutup panel tanpa merusak layout
+- [x] Menu klik kanan tab: duplikat tab, split kanan/bawah, tutup split, tutup tab
 
 **Selesai jika:** layout 3-4 panel stabil, resize lancar.
 

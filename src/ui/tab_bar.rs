@@ -1,6 +1,8 @@
 //! Bilah tab di atas area terminal.
 
-use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense};
+use eframe::egui::{self, pos2, vec2, Align2, Button, Color32, FontId, Rect, Sense};
+
+use crate::layout::Axis;
 
 pub const BAR_HEIGHT: f32 = 32.0;
 const MAX_TAB_WIDTH: f32 = 200.0;
@@ -21,6 +23,15 @@ pub enum TabAction {
     Select(usize),
     Close(usize),
     New,
+    Duplicate(usize),
+    Split(usize, Axis),
+    ClosePane(usize),
+}
+
+/// Data satu tab untuk ditampilkan.
+pub struct TabItem {
+    pub title: String,
+    pub pane_count: usize,
 }
 
 /// Lebar tiap tab: mengecil saat tab bertambah, sampai batas minimum.
@@ -44,16 +55,46 @@ fn new_button_rect(bar: Rect, width: f32, count: usize) -> Rect {
     Rect::from_min_size(pos2(left, bar.top()), vec2(NEW_BUTTON_WIDTH, bar.height()))
 }
 
-pub fn show(ui: &mut egui::Ui, titles: &[String], active: usize) -> Option<TabAction> {
+/// Menu klik kanan. Aksinya berlaku untuk tab yang diklik, walaupun tab itu tidak aktif.
+fn tab_menu(ui: &mut egui::Ui, index: usize, pane_count: usize) -> Option<TabAction> {
+    let mut action = None;
+    if ui.button("Duplikat tab").clicked() {
+        action = Some(TabAction::Duplicate(index));
+    }
+    ui.separator();
+    let split_right = Button::new("Split kanan").shortcut_text("Ctrl+Shift+D");
+    if ui.add(split_right).clicked() {
+        action = Some(TabAction::Split(index, Axis::Horizontal));
+    }
+    let split_down = Button::new("Split bawah").shortcut_text("Ctrl+Shift+E");
+    if ui.add(split_down).clicked() {
+        action = Some(TabAction::Split(index, Axis::Vertical));
+    }
+    let close_split = Button::new("Tutup split").shortcut_text("Ctrl+W");
+    if ui.add_enabled(pane_count > 1, close_split).clicked() {
+        action = Some(TabAction::ClosePane(index));
+    }
+    ui.separator();
+    if ui.button("Tutup tab").clicked() {
+        action = Some(TabAction::Close(index));
+    }
+    if action.is_some() {
+        ui.close();
+    }
+    action
+}
+
+pub fn show(ui: &mut egui::Ui, items: &[TabItem], active: usize) -> Option<TabAction> {
     let bar = ui.max_rect();
     let painter = ui.painter_at(bar);
     painter.rect_filled(bar, 0.0, BAR_COLOR);
 
-    let width = tab_width(bar.width(), titles.len());
+    let width = tab_width(bar.width(), items.len());
     let base = ui.scope_id().with("tab_bar");
     let mut action = None;
 
-    for (index, title) in titles.iter().enumerate() {
+    for (index, item) in items.iter().enumerate() {
+        let title = &item.title;
         let rect = tab_rect(bar, width, index);
         let close = close_rect(rect);
         let tab_id = base.with(index);
@@ -65,6 +106,11 @@ pub fn show(ui: &mut egui::Ui, titles: &[String], active: usize) -> Option<TabAc
         } else if response.clicked() {
             action = Some(TabAction::Select(index));
         }
+        response.context_menu(|ui| {
+            if let Some(chosen) = tab_menu(ui, index, item.pane_count) {
+                action = Some(chosen);
+            }
+        });
 
         let is_active = index == active;
         let hovered = response.hovered() || close_response.hovered();
@@ -101,7 +147,7 @@ pub fn show(ui: &mut egui::Ui, titles: &[String], active: usize) -> Option<TabAc
         );
     }
 
-    let new_button = new_button_rect(bar, width, titles.len());
+    let new_button = new_button_rect(bar, width, items.len());
     let response = ui.interact(new_button, base.with("new"), Sense::click());
     if response.clicked() {
         action = Some(TabAction::New);

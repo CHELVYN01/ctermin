@@ -2,7 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod config;
 mod layout;
+mod ssh;
 mod terminal;
 mod ui;
 
@@ -11,6 +13,10 @@ use app::CterminApp;
 use eframe::egui;
 
 fn main() -> anyhow::Result<()> {
+    if let Some(code) = ssh::askpass::run_if_requested() {
+        std::process::exit(code);
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ctermin")

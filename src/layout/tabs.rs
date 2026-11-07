@@ -30,6 +30,22 @@ impl Tabs {
         self.open_after(self.tabs.len())
     }
 
+    /// Membuka satu tab berisi `count` panel dalam grid seimbang.
+    pub fn open_group(&mut self, count: usize) -> Vec<PaneId> {
+        let panes: Vec<PaneId> = (0..count).map(|_| self.new_pane()).collect();
+        if let (Some(layout), Some(first)) = (
+            Layout::balanced(&panes, Axis::Horizontal),
+            panes.first().copied(),
+        ) {
+            self.tabs.push(Tab {
+                layout,
+                focused: first,
+            });
+            self.active = self.tabs.len() - 1;
+        }
+        panes
+    }
+
     /// Membuka tab baru tepat di sebelah kanan `index` dan langsung mengaktifkannya.
     pub fn open_after(&mut self, index: usize) -> PaneId {
         let pane = self.new_pane();
@@ -186,6 +202,18 @@ mod tests {
         assert_eq!(tabs.focused_panes()[1], new);
         assert_eq!(tabs.focused_panes()[3], last);
         assert_eq!(tabs.active_index(), 1);
+    }
+
+    #[test]
+    fn grup_panel_menjadi_satu_tab_aktif() {
+        let mut tabs = tabs(1);
+        let panes = tabs.open_group(3);
+
+        assert_eq!(tabs.pane_counts(), vec![1, 3]);
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.active(), panes.first().copied());
+        assert!(tabs.open_group(0).is_empty());
+        assert_eq!(tabs.pane_counts().len(), 2, "grup kosong tidak membuat tab");
     }
 
     #[test]

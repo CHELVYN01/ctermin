@@ -88,6 +88,7 @@ pub struct TerminalSession {
     /// Nama program, dipakai sebagai judul selama aplikasi belum mengirim judul sendiri.
     program: String,
     title: Option<String>,
+    server_name: Option<String>,
 }
 
 impl TerminalSession {
@@ -106,11 +107,21 @@ impl TerminalSession {
             exited: false,
             program,
             title: None,
+            server_name: None,
         })
     }
 
     pub fn title(&self) -> &str {
-        self.title.as_deref().unwrap_or(&self.program)
+        self.server_name
+            .as_deref()
+            .or(self.title.as_deref())
+            .unwrap_or(&self.program)
+    }
+
+    /// Menandai sesi ini sebagai koneksi ke server: judulnya tetap nama server, walaupun
+    /// server mengirim judul sendiri.
+    pub fn set_server_name(&mut self, name: &str) {
+        self.server_name = Some(name.to_owned());
     }
 
     /// Memproses output yang sudah tiba. Mengembalikan kapan frame berikutnya dibutuhkan
@@ -210,8 +221,12 @@ impl TerminalSession {
     fn mark_exited(&mut self, code: Option<u32>) {
         self.exited = true;
         let status = code.map_or_else(|| "tidak diketahui".to_owned(), |code| code.to_string());
-        let message =
-            format!("\r\n[Proses selesai, kode {status}. Tekan Enter untuk memulai shell baru.]");
+        let (ended, next) = if self.server_name.is_some() {
+            ("Koneksi terputus", "menyambung ulang")
+        } else {
+            ("Proses selesai", "memulai shell baru")
+        };
+        let message = format!("\r\n[{ended}, kode {status}. Tekan Enter untuk {next}.]");
         self.processor.advance(&mut self.term, message.as_bytes());
     }
 

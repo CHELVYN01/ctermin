@@ -1,13 +1,21 @@
 //! Bilah tab di atas area terminal.
 
-use eframe::egui::{self, pos2, vec2, Align2, Button, Color32, FontId, Rect, Sense};
+use eframe::egui::{
+    self, pos2, vec2, Align2, Button, Color32, FontId, Painter, Popup, Rect, ScrollArea, Sense,
+    Shape, Stroke,
+};
 
 use crate::layout::Axis;
+use crate::ssh::model::ServerId;
 
 pub const BAR_HEIGHT: f32 = 32.0;
 const MAX_TAB_WIDTH: f32 = 200.0;
 const MIN_TAB_WIDTH: f32 = 72.0;
 const NEW_BUTTON_WIDTH: f32 = 32.0;
+const DROPDOWN_WIDTH: f32 = 22.0;
+const CHEVRON_RADIUS: f32 = 4.0;
+const MENU_WIDTH: f32 = 220.0;
+const MENU_MAX_HEIGHT: f32 = 320.0;
 const CLOSE_BUTTON_SIZE: f32 = 18.0;
 const TEXT_MARGIN: f32 = 10.0;
 const FONT_SIZE: f32 = 13.0;
@@ -26,6 +34,7 @@ pub enum TabAction {
     Duplicate(usize),
     Split(usize, Axis),
     ClosePane(usize),
+    Connect(ServerId),
 }
 
 /// Data satu tab untuk ditampilkan.
@@ -34,9 +43,15 @@ pub struct TabItem {
     pub pane_count: usize,
 }
 
+/// Server dalam satu folder untuk menu tab baru. `title` kosong berarti tanpa folder.
+pub struct ServerGroup {
+    pub title: Option<String>,
+    pub servers: Vec<(ServerId, String)>,
+}
+
 /// Lebar tiap tab: mengecil saat tab bertambah, sampai batas minimum.
 fn tab_width(bar_width: f32, count: usize) -> f32 {
-    let available = bar_width - NEW_BUTTON_WIDTH;
+    let available = bar_width - NEW_BUTTON_WIDTH - DROPDOWN_WIDTH;
     (available / count.max(1) as f32).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
 }
 
@@ -51,8 +66,16 @@ fn close_rect(tab: Rect) -> Rect {
 }
 
 fn new_button_rect(bar: Rect, width: f32, count: usize) -> Rect {
-    let left = (bar.left() + width * count as f32).min(bar.right() - NEW_BUTTON_WIDTH);
+    let right_limit = bar.right() - NEW_BUTTON_WIDTH - DROPDOWN_WIDTH;
+    let left = (bar.left() + width * count as f32).min(right_limit);
     Rect::from_min_size(pos2(left, bar.top()), vec2(NEW_BUTTON_WIDTH, bar.height()))
+}
+
+fn dropdown_rect(new_button: Rect) -> Rect {
+    Rect::from_min_size(
+        new_button.right_top(),
+        vec2(DROPDOWN_WIDTH, new_button.height()),
+    )
 }
 
 /// Menu klik kanan. Aksinya berlaku untuk tab yang diklik, walaupun tab itu tidak aktif.
@@ -84,7 +107,12 @@ fn tab_menu(ui: &mut egui::Ui, index: usize, pane_count: usize) -> Option<TabAct
     action
 }
 
-pub fn show(ui: &mut egui::Ui, items: &[TabItem], active: usize) -> Option<TabAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    items: &[TabItem],
+    active: usize,
+    groups: &[ServerGroup],
+) -> Option<TabAction> {
     let bar = ui.max_rect();
     let painter = ui.painter_at(bar);
     painter.rect_filled(bar, 0.0, BAR_COLOR);
@@ -163,6 +191,63 @@ pub fn show(ui: &mut egui::Ui, items: &[TabItem], active: usize) -> Option<TabAc
         TEXT_COLOR,
     );
 
+    let dropdown = dropdown_rect(new_button);
+    let response = ui.interact(dropdown, base.with("new_menu"), Sense::click());
+    if response.hovered() {
+        painter.rect_filled(dropdown, 0.0, HOVER_COLOR);
+    }
+    paint_chevron(&painter, dropdown);
+    Popup::menu(&response).show(|ui| {
+        ui.set_min_width(MENU_WIDTH);
+        if let Some(chosen) = new_tab_menu(ui, groups) {
+            action = Some(chosen);
+        }
+    });
+
+    action
+}
+
+/// Font bawaan tidak punya glyph panah, jadi ikon digambar sebagai bentuk.
+fn paint_chevron(painter: &Painter, rect: Rect) {
+    let center = rect.center();
+    let points = vec![
+        pos2(center.x - CHEVRON_RADIUS, center.y - CHEVRON_RADIUS / 2.0),
+        pos2(center.x + CHEVRON_RADIUS, center.y - CHEVRON_RADIUS / 2.0),
+        pos2(center.x, center.y + CHEVRON_RADIUS / 2.0 + 1.0),
+    ];
+    painter.add(Shape::convex_polygon(points, TEXT_COLOR, Stroke::NONE));
+}
+
+/// Menu tab baru: shell, lalu server per folder.
+fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> {
+    let mut action = None;
+    if ui
+        .add(Button::new("PowerShell").shortcut_text("Ctrl+T"))
+        .clicked()
+    {
+        action = Some(TabAction::New);
+    }
+    ui.separator();
+    if groups.is_empty() {
+        ui.weak("Belum ada server");
+    }
+    ScrollArea::vertical()
+        .max_height(MENU_MAX_HEIGHT)
+        .show(ui, |ui| {
+            for group in groups {
+                if let Some(title) = &group.title {
+                    ui.weak(title);
+                }
+                for (id, name) in &group.servers {
+                    if ui.button(name).clicked() {
+                        action = Some(TabAction::Connect(*id));
+                    }
+                }
+            }
+        });
+    if action.is_some() {
+        ui.close();
+    }
     action
 }
 
@@ -188,6 +273,11 @@ pub mod test_positions {
         close_rect(tab_rect(bar(window_width), width, index)).center()
     }
 
+    pub fn dropdown(window_width: f32, count: usize) -> Pos2 {
+        let width = tab_width(window_width, count);
+        dropdown_rect(new_button_rect(bar(window_width), width, count)).center()
+    }
+
     pub fn new_button(window_width: f32, count: usize) -> Pos2 {
         let width = tab_width(window_width, count);
         new_button_rect(bar(window_width), width, count).center()
@@ -202,14 +292,14 @@ mod tests {
     fn lebar_tab_mengikuti_jumlah_dengan_batas() {
         assert_eq!(tab_width(1000.0, 1), MAX_TAB_WIDTH);
         assert_eq!(tab_width(1000.0, 0), MAX_TAB_WIDTH);
-        assert_eq!(tab_width(432.0, 5), 80.0);
+        assert_eq!(tab_width(454.0, 5), 80.0);
         assert_eq!(tab_width(400.0, 50), MIN_TAB_WIDTH);
     }
 
     #[test]
     fn tombol_baru_tetap_di_dalam_bilah() {
         let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, BAR_HEIGHT));
-        let rect = new_button_rect(bar, MIN_TAB_WIDTH, 50);
+        let rect = dropdown_rect(new_button_rect(bar, MIN_TAB_WIDTH, 50));
         assert!(bar.contains_rect(rect));
     }
 }

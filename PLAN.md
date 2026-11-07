@@ -48,15 +48,16 @@ Target: ringan (RAM < 50MB untuk 1 tab, binary < 15MB), cepat, stabil.
 **Selesai jika:** layout 3-4 panel stabil, resize lancar.
 
 ## Fase 4 - SSH Server Manager
-- [ ] Sidebar berisi folder dan server
-- [ ] Tambah/edit/hapus folder dan server
-- [ ] Data disimpan di `%APPDATA%\ctermin\servers.toml`
-- [ ] Field: nama, host, port, username, metode login (key/password)
-- [ ] Klik server  tab baru menjalankan `ssh.exe` ke server tersebut
-- [ ] Klik folder  buka semua server di folder dalam split (opsional)
-- [ ] Import dari `~/.ssh/config`
-- [ ] Password disimpan via keyring (Windows Credential Manager)
-- [ ] Status koneksi + tombol reconnect
+- [x] Sidebar berisi folder dan server
+- [x] Tambah/edit/hapus folder dan server
+- [x] Data disimpan di `%APPDATA%\ctermin\servers.toml`
+- [x] Field: nama, host, port, username, metode login (key/password)
+- [x] Klik server  tab baru menjalankan `ssh.exe` ke server tersebut
+- [x] Klik folder  buka semua server di folder dalam split (opsional)
+- [x] Import dari `~/.ssh/config`
+- [x] Password disimpan via keyring (Windows Credential Manager)
+- [x] Status koneksi + tombol reconnect
+- [x] Dropdown di sebelah tombol + berisi PowerShell dan daftar server per folder
 
 **Selesai jika:** klik folder `cj` langsung masuk ke server cj.
 

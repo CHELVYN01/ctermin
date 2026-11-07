@@ -73,6 +73,28 @@ impl Divider {
 }
 
 impl Layout {
+    /// Menyusun panel sebagai grid seimbang, dengan arah bergantian di tiap tingkat.
+    pub fn balanced(panes: &[PaneId], axis: Axis) -> Option<Self> {
+        match panes {
+            [] => None,
+            [pane] => Some(Self::Leaf(*pane)),
+            _ => {
+                let middle = panes.len().div_ceil(2);
+                let (first, second) = panes.split_at(middle);
+                let next = match axis {
+                    Axis::Horizontal => Axis::Vertical,
+                    Axis::Vertical => Axis::Horizontal,
+                };
+                Some(Self::Split {
+                    axis,
+                    ratio: middle as f32 / panes.len() as f32,
+                    a: Box::new(Self::balanced(first, next)?),
+                    b: Box::new(Self::balanced(second, next)?),
+                })
+            }
+        }
+    }
+
     /// Membagi panel `target`. Panel baru berada di kanan atau bawah.
     pub fn split(&mut self, target: PaneId, new: PaneId, axis: Axis) -> bool {
         match self {
@@ -276,6 +298,28 @@ mod tests {
         layout.split(b, c, Axis::Vertical);
         layout.split(c, d, Axis::Horizontal);
         (layout, [a, b, c, d])
+    }
+
+    #[test]
+    fn grid_seimbang_memberi_ruang_sama_rata() {
+        let panes: [PaneId; 4] = ids();
+        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("ada panel");
+        let rects = layout.arrange(screen(), 0.0);
+
+        assert_eq!(rects.len(), 4);
+        for (_, rect) in &rects {
+            assert!((rect.area() - screen().area() / 4.0).abs() < 1000.0);
+        }
+    }
+
+    #[test]
+    fn grid_ganjil_tetap_proporsional() {
+        let panes: [PaneId; 3] = ids();
+        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("ada panel");
+        let rects = layout.arrange(screen(), 0.0);
+        assert_eq!(rects.len(), 3);
+        assert!(rects[0].1.width() > rects[2].1.width());
+        assert!(Layout::balanced(&[], Axis::Horizontal).is_none());
     }
 
     #[test]

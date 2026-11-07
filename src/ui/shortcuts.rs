@@ -12,6 +12,7 @@ pub enum Shortcut {
     Previous,
     Split(Axis),
     Focus(Direction),
+    ToggleSidebar,
 }
 
 fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
@@ -23,6 +24,7 @@ fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
         Key::Tab if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Previous),
         Key::D if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Horizontal)),
         Key::E if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Vertical)),
+        Key::B if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::ToggleSidebar),
         Key::ArrowLeft if modifiers.matches_exact(Modifiers::ALT) => {
             Some(Shortcut::Focus(Direction::Left))
         }

@@ -3,6 +3,7 @@ name = "ctermin"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal native Windows dengan SSH manager, split pane, dan integrasi AI"
+license = "MIT"
 
 [workspace]
 

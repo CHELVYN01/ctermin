@@ -19,9 +19,9 @@ const DOT_RADIUS: f32 = 4.0;
 const ICON_COLOR: Color32 = Color32::from_rgb(0xaa, 0xaa, 0xaa);
 const ICON_HOVER_COLOR: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
 
-/// Status server berdasarkan panel yang terhubung kepadanya.
+/// Server status based on the panes connected to it.
 ///
-/// `Active` berarti proses ssh.exe masih berjalan, termasuk saat masih menunggu login.
+/// `Active` means ssh.exe is still running, which includes waiting for login.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ServerStatus {
     Active,
@@ -91,7 +91,7 @@ impl Sidebar {
                         server_row(ui, server, statuses, &mut action);
                     }
                     if store.folders.is_empty() && store.servers.is_empty() {
-                        ui.weak("Belum ada server.");
+                        ui.weak("No servers yet.");
                     }
                 });
         });
@@ -117,7 +117,7 @@ impl Sidebar {
             }
             let response = ui
                 .selectable_label(false, &folder.name)
-                .on_hover_text("Klik untuk membuka semua server di folder ini");
+                .on_hover_text("Click to open every server in this folder");
             if response.clicked() {
                 *action = Some(SidebarAction::ConnectFolder(folder.id));
             }
@@ -128,14 +128,14 @@ impl Sidebar {
                         ui.close();
                     }
                 };
-                choose(ui, "Buka semua", SidebarAction::ConnectFolder(folder.id));
+                choose(ui, "Open all", SidebarAction::ConnectFolder(folder.id));
                 choose(
                     ui,
-                    "Tambah server di sini",
+                    "Add server here",
                     SidebarAction::AddServer(Some(folder.id)),
                 );
-                choose(ui, "Ganti nama", SidebarAction::RenameFolder(folder.id));
-                choose(ui, "Hapus folder", SidebarAction::DeleteFolder(folder.id));
+                choose(ui, "Rename", SidebarAction::RenameFolder(folder.id));
+                choose(ui, "Delete folder", SidebarAction::DeleteFolder(folder.id));
             });
         });
 
@@ -176,17 +176,17 @@ fn server_row(
                     ui.close();
                 }
             };
-            choose(ui, "Sambungkan", SidebarAction::Connect(server.id));
+            choose(ui, "Connect", SidebarAction::Connect(server.id));
             if status == Some(ServerStatus::Disconnected) {
-                choose(ui, "Sambung ulang", SidebarAction::Reconnect(server.id));
+                choose(ui, "Reconnect", SidebarAction::Reconnect(server.id));
             }
             choose(ui, "Edit", SidebarAction::EditServer(server.id));
-            choose(ui, "Hapus", SidebarAction::DeleteServer(server.id));
+            choose(ui, "Delete", SidebarAction::DeleteServer(server.id));
         });
     });
 }
 
-/// Ikon digambar sebagai bentuk karena font bawaan tidak punya glyph panah dan bulatan.
+/// Icons are drawn as shapes because the default font has no arrow or circle glyphs.
 fn arrow_button(ui: &mut egui::Ui, collapsed: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(ICON_SIZE, ICON_SIZE), Sense::click());
     let center = rect.center();

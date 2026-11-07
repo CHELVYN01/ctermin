@@ -1,4 +1,4 @@
-//! Tata letak tab dan split pane.
+//! Tab and split pane layout.
 
 mod tabs;
 mod tree;

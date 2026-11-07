@@ -1,33 +1,40 @@
-//! Lokasi dan penyimpanan file data di `%APPDATA%\ctermin`.
+//! Location and storage of data files in `%APPDATA%\ctermin`.
 
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
+use crate::ai::settings::AppConfig;
 use crate::ssh::model::ServerStore;
 
 const APP_FOLDER: &str = "ctermin";
-const SERVERS_FILE: &str = "servers.toml";
-const DAMAGED_SUFFIX: &str = "rusak";
+pub const SERVERS_FILE: &str = "servers.toml";
+pub const CONFIG_FILE: &str = "config.toml";
+const DAMAGED_SUFFIX: &str = "damaged";
 const TEMPORARY_SUFFIX: &str = "tmp";
 
-/// Data server beserta lokasi filenya. Tanpa lokasi, perubahan hanya tinggal di memori.
+/// The contents of a toml file and its path. Without a path, changes stay in memory.
 #[derive(Default)]
-pub struct ServerRepository {
-    pub store: ServerStore,
+pub struct TomlFile<T> {
+    pub data: T,
     path: Option<PathBuf>,
 }
 
-impl ServerRepository {
-    /// Membuka `%APPDATA%\ctermin\servers.toml`. String kedua berisi peringatan untuk user.
-    pub fn open_default() -> (Self, Option<String>) {
+pub type ServerRepository = TomlFile<ServerStore>;
+pub type ConfigFile = TomlFile<AppConfig>;
+
+impl<T: Default + Serialize + DeserializeOwned> TomlFile<T> {
+    /// Opens a file in `%APPDATA%\ctermin`. The second value holds a warning for the user.
+    pub fn open_default(file_name: &str) -> (Self, Option<String>) {
         let Some(app_data) = std::env::var_os("APPDATA") else {
-            let warning = "Folder APPDATA tidak ditemukan, data server tidak akan disimpan.";
+            let warning = "The APPDATA folder was not found, so data will not be saved.";
             return (Self::default(), Some(warning.to_owned()));
         };
-        let path = PathBuf::from(app_data).join(APP_FOLDER).join(SERVERS_FILE);
+        let path = PathBuf::from(app_data).join(APP_FOLDER).join(file_name);
         Self::open(path)
     }
 
@@ -35,59 +42,62 @@ impl ServerRepository {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                let store = ServerStore::default();
+                let data = T::default();
                 let path = Some(path);
-                return (Self { store, path }, None);
+                return (Self { data, path }, None);
             }
             Err(_) => {
-                // Lokasi sengaja dibuang agar file yang gagal dibaca tidak tertimpa data kosong.
-                let warning = format!("{} gagal dibaca, perubahan tidak disimpan.", path.display());
+                // The path is dropped on purpose, so an unreadable file is not overwritten with empty data.
+                let warning = format!(
+                    "Could not read {}, so changes will not be saved.",
+                    path.display()
+                );
                 return (Self::default(), Some(warning));
             }
         };
 
         match toml::from_str(&text) {
-            Ok(store) => {
+            Ok(data) => {
                 let path = Some(path);
-                (Self { store, path }, None)
+                (Self { data, path }, None)
             }
             Err(_) => {
                 let backup = path.with_extension(DAMAGED_SUFFIX);
                 let copied = fs::copy(&path, &backup).is_ok();
                 let warning = format!(
-                    "{} rusak dan tidak bisa dibaca. {}",
+                    "{} is damaged and cannot be read. {}",
                     path.display(),
                     if copied {
-                        format!("Salinannya ada di {}.", backup.display())
+                        format!("A copy is at {}.", backup.display())
                     } else {
-                        "Salinannya gagal dibuat.".to_owned()
+                        "Could not create a copy.".to_owned()
                     }
                 );
                 let path = copied.then_some(path);
-                let store = ServerStore::default();
-                (Self { store, path }, Some(warning))
+                let data = T::default();
+                (Self { data, path }, Some(warning))
             }
         }
     }
 
     pub fn save(&self) -> Result<()> {
         match &self.path {
-            Some(path) => write_atomic(path, &self.store),
+            Some(path) => write_atomic(path, &self.data),
             None => Ok(()),
         }
     }
 }
 
-/// Menulis lewat file sementara, supaya aplikasi yang mati di tengah penulisan tidak merusak
-/// data lama.
-fn write_atomic(path: &Path, store: &ServerStore) -> Result<()> {
+/// Writes through a temporary file, so a crash in the middle of writing cannot damage the
+/// old data.
+fn write_atomic<T: Serialize>(path: &Path, data: &T) -> Result<()> {
     if let Some(folder) = path.parent() {
-        fs::create_dir_all(folder).context("Folder data gagal dibuat")?;
+        fs::create_dir_all(folder).context("Could not create the data folder")?;
     }
-    let text = toml::to_string_pretty(store).context("Data server gagal disusun")?;
+    let text = toml::to_string_pretty(data).context("Could not serialize the data")?;
     let temporary = path.with_extension(TEMPORARY_SUFFIX);
-    fs::write(&temporary, text).context("Data server gagal ditulis")?;
-    fs::rename(&temporary, path).context("Data server gagal disimpan")
+    fs::write(&temporary, text).context("Could not write the data")?;
+    fs::rename(&temporary, path).context("Could not save the data")
 }
 
 #[cfg(test)]
@@ -97,7 +107,7 @@ mod tests {
     use super::*;
     use crate::ssh::model::{AuthMethod, Server, DEFAULT_PORT};
 
-    /// Folder sementara yang dibersihkan saat test selesai.
+    /// A temporary folder removed when the test ends.
     struct TempFolder(PathBuf);
 
     impl TempFolder {
@@ -125,7 +135,7 @@ mod tests {
         let id = store.new_server_id();
         store.upsert_server(Server {
             id,
-            name: "cj-utama".to_owned(),
+            name: "cj-main".to_owned(),
             host: "10.0.0.5".to_owned(),
             port: DEFAULT_PORT,
             username: "root".to_owned(),
@@ -135,7 +145,7 @@ mod tests {
         let id = store.new_server_id();
         store.upsert_server(Server {
             id,
-            name: "lain".to_owned(),
+            name: "other".to_owned(),
             host: "10.0.0.6".to_owned(),
             port: 2222,
             username: String::new(),
@@ -148,51 +158,51 @@ mod tests {
     }
 
     #[test]
-    fn data_tersimpan_dan_terbaca_kembali() {
+    fn data_saves_and_loads_back() {
         let folder = TempFolder::new();
         let (mut repository, warning) = ServerRepository::open(folder.file());
         assert_eq!(warning, None);
-        repository.store = sample_store();
-        repository.save().expect("bisa disimpan");
+        repository.data = sample_store();
+        repository.save().expect("saved");
 
         let (reopened, warning) = ServerRepository::open(folder.file());
         assert_eq!(warning, None);
-        assert_eq!(reopened.store, sample_store());
+        assert_eq!(reopened.data, sample_store());
     }
 
     #[test]
-    fn file_toml_tidak_punya_ruang_untuk_password() {
-        let text = toml::to_string_pretty(&sample_store()).expect("bisa disusun");
+    fn toml_file_has_no_place_for_passwords() {
+        let text = toml::to_string_pretty(&sample_store()).expect("serializable");
         assert!(!text.to_lowercase().contains("secret"));
         assert!(!text.contains("password ="));
         assert!(!text.contains("password="));
     }
 
     #[test]
-    fn file_rusak_dicadangkan_dan_tidak_hilang() {
+    fn damaged_file_is_backed_up_not_lost() {
         let folder = TempFolder::new();
         let path = folder.file();
-        fs::create_dir_all(path.parent().expect("ada induk")).expect("folder dibuat");
-        fs::write(&path, "ini [bukan toml").expect("file ditulis");
+        fs::create_dir_all(path.parent().expect("has a parent")).expect("folder created");
+        fs::write(&path, "this [is not toml").expect("file written");
 
         let (repository, warning) = ServerRepository::open(path.clone());
 
-        assert!(warning.expect("ada peringatan").contains("rusak"));
-        assert!(repository.store.servers.is_empty());
+        assert!(warning.expect("has a warning").contains("damaged"));
+        assert!(repository.data.servers.is_empty());
         let backup = fs::read_to_string(path.with_extension(DAMAGED_SUFFIX));
-        assert_eq!(backup.expect("cadangan ada"), "ini [bukan toml");
+        assert_eq!(backup.expect("backup exists"), "this [is not toml");
     }
 
     #[test]
-    fn tanpa_lokasi_simpan_tidak_menulis_apa_pun() {
-        ServerRepository::default().save().expect("tidak error");
+    fn saving_without_a_path_writes_nothing() {
+        ServerRepository::default().save().expect("no error");
     }
 
     #[test]
-    fn penyimpanan_tidak_meninggalkan_file_sementara() {
+    fn saving_leaves_no_temporary_file() {
         let folder = TempFolder::new();
         let (repository, _) = ServerRepository::open(folder.file());
-        repository.save().expect("bisa disimpan");
+        repository.save().expect("saved");
         assert!(!folder.file().with_extension(TEMPORARY_SUFFIX).exists());
     }
 }

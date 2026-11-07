@@ -1,4 +1,4 @@
-//! Menyusun perintah `ssh.exe` untuk sebuah server.
+//! Builds the `ssh.exe` command for a server.
 
 use std::ffi::OsString;
 
@@ -7,7 +7,7 @@ use portable_pty::CommandBuilder;
 use super::askpass;
 use super::model::{AuthMethod, Server, DEFAULT_PORT};
 
-/// Menolak nilai yang bisa dibaca ssh sebagai opsi, misalnya `-oProxyCommand=...`.
+/// Rejects values ssh could read as options, such as `-oProxyCommand=...`.
 pub fn is_safe_ssh_value(value: &str) -> bool {
     !value.starts_with('-')
         && !value
@@ -30,14 +30,14 @@ fn ssh_args(server: &Server, has_password: bool) -> Vec<String> {
         args.extend(["-i".to_owned(), path.clone()]);
     }
     if has_password {
-        // Password tersimpan yang salah tidak boleh dicoba berulang sampai akun terkunci.
+        // A wrong saved password must not be retried until the account locks.
         args.extend(["-o".to_owned(), "NumberOfPasswordPrompts=1".to_owned()]);
     }
     args.extend(["--".to_owned(), server.host.clone()]);
     args
 }
 
-/// Membuat perintah ssh. `askpass_program` diisi jika password tersimpan di Credential Manager.
+/// Builds the ssh command. `askpass_program` is set if a password is in Credential Manager.
 pub fn ssh_command(server: &Server, askpass_program: Option<OsString>) -> CommandBuilder {
     let mut command = CommandBuilder::new("ssh.exe");
     command.args(ssh_args(server, askpass_program.is_some()));
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn perintah_dasar() {
+    fn basic_command() {
         assert_eq!(
             ssh_args(&server(), false),
             vec!["-l", "root", "--", "10.0.0.5"]
@@ -78,11 +78,11 @@ mod tests {
     }
 
     #[test]
-    fn port_dan_kunci_ikut_jika_diisi() {
+    fn port_and_key_are_included_when_set() {
         let mut server = server();
         server.port = 2222;
         server.auth = AuthMethod::Key {
-            identity_file: Some(r"C:\kunci saya\id".to_owned()),
+            identity_file: Some(r"C:\my keys\id".to_owned()),
         };
         assert_eq!(
             ssh_args(&server, false),
@@ -92,7 +92,7 @@ mod tests {
                 "-l",
                 "root",
                 "-i",
-                r"C:\kunci saya\id",
+                r"C:\my keys\id",
                 "--",
                 "10.0.0.5"
             ]
@@ -100,43 +100,43 @@ mod tests {
     }
 
     #[test]
-    fn username_kosong_tidak_mengirim_opsi() {
+    fn empty_username_sends_no_option() {
         let mut server = server();
         server.username.clear();
         assert_eq!(ssh_args(&server, false), vec!["--", "10.0.0.5"]);
     }
 
     #[test]
-    fn password_tersimpan_hanya_dicoba_sekali() {
+    fn saved_password_is_tried_only_once() {
         let args = ssh_args(&server(), true);
         assert!(args.contains(&"NumberOfPasswordPrompts=1".to_owned()));
     }
 
     #[test]
-    fn host_selalu_setelah_pemisah_opsi() {
+    fn host_always_follows_the_option_separator() {
         let args = ssh_args(&server(), true);
         assert_eq!(args[args.len() - 2], "--");
         assert_eq!(args[args.len() - 1], "10.0.0.5");
     }
 
     #[test]
-    fn nilai_berbahaya_ditolak() {
+    fn dangerous_values_are_rejected() {
         assert!(is_safe_ssh_value("10.0.0.5"));
-        assert!(is_safe_ssh_value("server.contoh.id"));
+        assert!(is_safe_ssh_value("server.example.com"));
         assert!(is_safe_ssh_value("user_1"));
         assert!(!is_safe_ssh_value("-oProxyCommand=calc"));
-        assert!(!is_safe_ssh_value("host dengan spasi"));
+        assert!(!is_safe_ssh_value("host with spaces"));
         assert!(!is_safe_ssh_value("host\nbaris"));
     }
 
     #[test]
-    fn password_tidak_pernah_ada_di_argumen() {
+    fn password_is_never_in_arguments() {
         let mut server = server();
         server.auth = AuthMethod::Password;
         let command = ssh_command(&server, Some("ctermin.exe".into()));
         let argv = command.get_argv();
         assert!(argv
             .iter()
-            .all(|arg| !arg.to_string_lossy().contains("rahasia")));
+            .all(|arg| !arg.to_string_lossy().contains("secret")));
     }
 }

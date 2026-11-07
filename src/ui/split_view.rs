@@ -1,16 +1,16 @@
-//! Pembatas antar panel yang bisa di-drag.
+//! Draggable dividers between panes.
 
 use eframe::egui::{self, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind};
 
 use crate::layout::{Axis, Branch, Divider};
 
-/// Area drag lebih lebar dari garisnya supaya mudah diraih.
+/// The drag area is wider than the line so it is easy to grab.
 const GRAB_MARGIN: f32 = 3.0;
 const DIVIDER_COLOR: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const DIVIDER_ACTIVE_COLOR: Color32 = Color32::from_rgb(0x3a, 0x96, 0xdd);
 const FOCUS_COLOR: Color32 = Color32::from_rgb(0x3a, 0x96, 0xdd);
 
-/// Rasio baru dari pembatas yang sedang di-drag.
+/// The new ratio from a divider being dragged.
 pub struct RatioChange {
     pub path: Vec<Branch>,
     pub ratio: f32,
@@ -48,7 +48,7 @@ pub fn show_dividers(ui: &mut egui::Ui, dividers: &[Divider]) -> Option<RatioCha
     change
 }
 
-/// Garis tipis penanda panel yang menerima keyboard.
+/// A thin outline marking the pane that receives the keyboard.
 pub fn paint_focus(ui: &egui::Ui, rect: Rect) {
     let stroke = Stroke::new(1.0, FOCUS_COLOR);
     ui.painter()

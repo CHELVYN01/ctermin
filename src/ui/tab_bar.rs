@@ -1,4 +1,4 @@
-//! Bilah tab di atas area terminal.
+//! The tab bar above the terminal area.
 
 use eframe::egui::{
     self, pos2, vec2, Align2, Button, Color32, FontId, Painter, Popup, Rect, ScrollArea, Sense,
@@ -37,19 +37,19 @@ pub enum TabAction {
     Connect(ServerId),
 }
 
-/// Data satu tab untuk ditampilkan.
+/// The data shown for one tab.
 pub struct TabItem {
     pub title: String,
     pub pane_count: usize,
 }
 
-/// Server dalam satu folder untuk menu tab baru. `title` kosong berarti tanpa folder.
+/// The servers of one folder for the new tab menu. An empty `title` means no folder.
 pub struct ServerGroup {
     pub title: Option<String>,
     pub servers: Vec<(ServerId, String)>,
 }
 
-/// Lebar tiap tab: mengecil saat tab bertambah, sampai batas minimum.
+/// Width of each tab: it shrinks as tabs are added, down to a minimum.
 fn tab_width(bar_width: f32, count: usize) -> f32 {
     let available = bar_width - NEW_BUTTON_WIDTH - DROPDOWN_WIDTH;
     (available / count.max(1) as f32).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
@@ -78,27 +78,27 @@ fn dropdown_rect(new_button: Rect) -> Rect {
     )
 }
 
-/// Menu klik kanan. Aksinya berlaku untuk tab yang diklik, walaupun tab itu tidak aktif.
+/// The right-click menu. Actions apply to the clicked tab, even if it is not active.
 fn tab_menu(ui: &mut egui::Ui, index: usize, pane_count: usize) -> Option<TabAction> {
     let mut action = None;
-    if ui.button("Duplikat tab").clicked() {
+    if ui.button("Duplicate tab").clicked() {
         action = Some(TabAction::Duplicate(index));
     }
     ui.separator();
-    let split_right = Button::new("Split kanan").shortcut_text("Ctrl+Shift+D");
+    let split_right = Button::new("Split right").shortcut_text("Ctrl+Shift+D");
     if ui.add(split_right).clicked() {
         action = Some(TabAction::Split(index, Axis::Horizontal));
     }
-    let split_down = Button::new("Split bawah").shortcut_text("Ctrl+Shift+E");
+    let split_down = Button::new("Split down").shortcut_text("Ctrl+Shift+E");
     if ui.add(split_down).clicked() {
         action = Some(TabAction::Split(index, Axis::Vertical));
     }
-    let close_split = Button::new("Tutup split").shortcut_text("Ctrl+W");
+    let close_split = Button::new("Close split").shortcut_text("Ctrl+W");
     if ui.add_enabled(pane_count > 1, close_split).clicked() {
         action = Some(TabAction::ClosePane(index));
     }
     ui.separator();
-    if ui.button("Tutup tab").clicked() {
+    if ui.button("Close tab").clicked() {
         action = Some(TabAction::Close(index));
     }
     if action.is_some() {
@@ -207,7 +207,7 @@ pub fn show(
     action
 }
 
-/// Font bawaan tidak punya glyph panah, jadi ikon digambar sebagai bentuk.
+/// The default font has no arrow glyph, so the icon is drawn as a shape.
 fn paint_chevron(painter: &Painter, rect: Rect) {
     let center = rect.center();
     let points = vec![
@@ -218,7 +218,7 @@ fn paint_chevron(painter: &Painter, rect: Rect) {
     painter.add(Shape::convex_polygon(points, TEXT_COLOR, Stroke::NONE));
 }
 
-/// Menu tab baru: shell, lalu server per folder.
+/// The new tab menu: the shell, then servers by folder.
 fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> {
     let mut action = None;
     if ui
@@ -229,7 +229,7 @@ fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> 
     }
     ui.separator();
     if groups.is_empty() {
-        ui.weak("Belum ada server");
+        ui.weak("No servers yet");
     }
     ScrollArea::vertical()
         .max_height(MENU_MAX_HEIGHT)
@@ -251,7 +251,7 @@ fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> 
     action
 }
 
-/// Posisi layar untuk dipakai test klik.
+/// Screen positions for click tests.
 #[cfg(test)]
 pub mod test_positions {
     use eframe::egui::Pos2;
@@ -289,7 +289,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lebar_tab_mengikuti_jumlah_dengan_batas() {
+    fn tab_width_follows_the_count_within_limits() {
         assert_eq!(tab_width(1000.0, 1), MAX_TAB_WIDTH);
         assert_eq!(tab_width(1000.0, 0), MAX_TAB_WIDTH);
         assert_eq!(tab_width(454.0, 5), 80.0);
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_baru_tetap_di_dalam_bilah() {
+    fn new_button_stays_inside_the_bar() {
         let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, BAR_HEIGHT));
         let rect = dropdown_rect(new_button_rect(bar, MIN_TAB_WIDTH, 50));
         assert!(bar.contains_rect(rect));

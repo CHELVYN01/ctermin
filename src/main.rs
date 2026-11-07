@@ -1,6 +1,7 @@
-// Sembunyikan jendela console pada build release; mode debug tetap memakainya untuk log.
+// Hide the console window in release builds; debug builds keep it for logs.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod app;
 mod config;
 mod layout;
@@ -30,5 +31,5 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(CterminApp::new(&cc.egui_ctx)))),
     )
-    .map_err(|err| anyhow!("Gagal membuka jendela ctermin: {err}"))
+    .map_err(|err| anyhow!("Could not open the ctermin window: {err}"))
 }

@@ -1,4 +1,4 @@
-//! Palet warna dan penentuan warna akhir tiap sel.
+//! Color palette and final color resolution for each cell.
 
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::{Colors, COUNT};
@@ -34,7 +34,7 @@ const DIM_FACTOR: f32 = 0.66;
 
 pub const SELECTION: Rgb = rgb(0x26, 0x4f, 0x78);
 
-/// Warna bawaan untuk seluruh indeks warna terminal.
+/// Default colors for every terminal color index.
 pub struct Palette([Rgb; COUNT]);
 
 impl Palette {
@@ -42,7 +42,7 @@ impl Palette {
         let mut colors = [BACKGROUND; COUNT];
         colors[..16].copy_from_slice(&ANSI);
 
-        // Kubus warna 6x6x6.
+        // 6x6x6 color cube.
         const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
         let cube = LEVELS.iter().flat_map(|&r| {
             LEVELS
@@ -53,7 +53,7 @@ impl Palette {
             *slot = color;
         }
 
-        // Gradasi abu-abu.
+        // Grayscale ramp.
         for (slot, level) in colors[232..256].iter_mut().zip((8u8..).step_by(10)) {
             *slot = rgb(level, level, level);
         }
@@ -70,7 +70,7 @@ impl Palette {
         Self(colors)
     }
 
-    /// Warna pada indeks tertentu; warna yang diubah aplikasi (OSC 4/10/11) didahulukan.
+    /// The color at an index; colors changed by an app (OSC 4/10/11) win.
     pub fn indexed(&self, index: usize, overrides: &Colors) -> Rgb {
         overrides[index].unwrap_or(self.0[index])
     }
@@ -87,7 +87,7 @@ impl Palette {
         }
     }
 
-    /// Warna depan dan latar sebuah sel setelah atribut bold, dim, inverse, dan hidden.
+    /// A cell's foreground and background after bold, dim, inverse, and hidden.
     pub fn cell_colors(&self, cell: &Cell, overrides: &Colors) -> (Rgb, Rgb) {
         let source = if cell.flags.contains(Flags::BOLD) {
             brighten(cell.fg)
@@ -110,7 +110,7 @@ impl Palette {
     }
 }
 
-/// Teks bold pada 8 warna dasar memakai pasangan terangnya, seperti terminal pada umumnya.
+/// Bold text in the 8 base colors uses its bright pair, like most terminals.
 fn brighten(color: Color) -> Color {
     match color {
         Color::Named(named) if (named as usize) < 8 || named == NamedColor::Foreground => {
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn palet_256_warna_sesuai_xterm() {
+    fn palette_of_256_colors_matches_xterm() {
         let palette = Palette::new();
         let overrides = Colors::default();
         assert_eq!(palette.indexed(16, &overrides), rgb(0, 0, 0));
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn warna_dari_aplikasi_didahulukan() {
+    fn app_colors_take_priority() {
         let palette = Palette::new();
         let mut overrides = Colors::default();
         overrides[NamedColor::Background] = Some(rgb(1, 2, 3));
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn atribut_sel() {
+    fn cell_attributes() {
         let palette = Palette::new();
         let overrides = Colors::default();
         let red = Color::Named(NamedColor::Red);

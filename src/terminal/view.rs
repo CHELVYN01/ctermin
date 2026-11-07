@@ -1,4 +1,4 @@
-//! Widget egui: menggambar grid terminal dan menerjemahkan event ke [`TerminalSession`].
+//! The egui widget: draws the terminal grid and translates events for [`TerminalSession`].
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Point, Side};
@@ -29,7 +29,7 @@ struct CellMetrics {
 
 pub struct TerminalView {
     font: FontId,
-    /// Sisa scroll roda mouse yang belum mencapai satu baris.
+    /// Leftover mouse wheel scroll that has not reached a full line.
     wheel_remainder: f32,
 }
 
@@ -41,8 +41,8 @@ impl TerminalView {
         }
     }
 
-    /// Menggambar satu panel. `id` harus tetap sama untuk panel yang sama selama layout berubah.
-    /// Mengembalikan `true` jika user menekan mouse pada panel ini.
+    /// Draws one pane. `id` must stay the same for a pane while the layout changes.
+    /// Returns `true` if the user pressed the mouse on this pane.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -86,7 +86,7 @@ impl TerminalView {
             )
         });
         CellMetrics {
-            // Lebar tidak dibulatkan agar sama dengan jarak glyph hasil layout egui.
+            // The width is not rounded, so it matches the glyph spacing from egui's layout.
             width,
             height: (height * scale).ceil() / scale,
         }
@@ -103,7 +103,7 @@ impl TerminalView {
         let (events, modifiers) = ctx.input(|input| (input.events.clone(), input.modifiers));
         for event in events {
             match event {
-                // Roda mouse untuk panel di bawah pointer, walaupun panel itu tidak fokus.
+                // The mouse wheel goes to the pane under the pointer, even if it is not focused.
                 Event::MouseWheel { unit, delta, .. } => {
                     if response.contains_pointer() {
                         self.handle_wheel(session, unit, delta.y, metrics);
@@ -137,7 +137,7 @@ impl TerminalView {
 
         let mode = session.mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-            // Layar alternatif (vim, less) tidak punya scrollback: roda menjadi tombol panah.
+            // The alternate screen (vim, less) has no scrollback: the wheel becomes arrow keys.
             let arrow = if whole > 0 {
                 Key::ArrowUp
             } else {
@@ -218,8 +218,8 @@ impl TerminalView {
                 text.flush(painter, &layout, &self.font);
                 continue;
             }
-            // Karakter non-ASCII bisa memakai font cadangan dengan lebar berbeda, jadi
-            // masing-masing digambar sendiri agar kolom berikutnya tidak bergeser.
+            // Non-ASCII characters may use a fallback font with another width, so
+            // each is drawn on its own to keep the following columns in place.
             if !character.is_ascii() || !text.continues(row, column, foreground) {
                 text.flush(painter, &layout, &self.font);
                 text.start(row, column, foreground);
@@ -246,8 +246,8 @@ impl TerminalView {
     }
 }
 
-/// Tab, panah, dan Escape adalah milik proses di terminal, bukan navigasi fokus egui. Tanpa ini,
-/// Tab memindahkan fokus ke tombol bilah tab lalu Enter ikut menekan tombol itu.
+/// Tab, arrows, and Escape belong to the process in the terminal, not egui focus navigation. Otherwise
+/// Tab moves focus to a tab bar button and Enter presses that button too.
 fn keep_keyboard_focus(ui: &egui::Ui, response: &egui::Response) {
     response.request_focus();
     let filter = EventFilter {
@@ -266,7 +266,7 @@ fn handle_keyboard(
     modifiers: Modifiers,
 ) {
     match event {
-        // Dengan Alt, byte-nya sudah dikirim dari event Key sebagai ESC + karakter.
+        // With Alt, the bytes were already sent from the Key event as ESC + character.
         Event::Text(text) if !modifiers.alt => session.send_input(text.into_bytes()),
         Event::Key {
             key,
@@ -274,7 +274,7 @@ fn handle_keyboard(
             modifiers,
             ..
         } => handle_key(ctx, session, key, modifiers),
-        // egui menelan Ctrl+C dan Ctrl+X sebagai event clipboard.
+        // egui swallows Ctrl+C and Ctrl+X as clipboard events.
         Event::Copy => match session.take_selection() {
             Some(text) => ctx.copy_text(text),
             None => session.send_input(vec![INTERRUPT]),
@@ -285,7 +285,7 @@ fn handle_keyboard(
     }
 }
 
-/// Shortcut milik aplikasi didahulukan, sisanya diteruskan ke proses di terminal.
+/// App shortcuts come first; everything else goes to the process in the terminal.
 fn handle_key(ctx: &egui::Context, session: &mut TerminalSession, key: Key, modifiers: Modifiers) {
     let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
     if modifiers.matches_exact(ctrl_shift) && key == Key::C {
@@ -319,8 +319,8 @@ fn handle_selection(
         return;
     };
     if response.drag_started() {
-        // drag_started baru aktif setelah pointer bergerak melewati ambang, jadi seleksi harus
-        // dimulai dari titik tekan, bukan dari posisi pointer saat ini.
+        // drag_started fires only after the pointer passes a threshold, so a selection must
+        // start at the press position, not the current pointer position.
         let press = response.ctx.input(|input| input.pointer.press_origin());
         let (column, line, side) = cell_at(press.unwrap_or(position), origin, metrics);
         session.start_selection(column, line, side);
@@ -373,7 +373,7 @@ fn paint_cursor(
     }
 }
 
-/// Posisi sel di layar.
+/// Cell positions on screen.
 struct Layout {
     origin: Pos2,
     metrics: CellMetrics,
@@ -389,7 +389,7 @@ impl Layout {
             )
     }
 
-    /// Dibulatkan ke piksel supaya tidak ada celah tipis di antara latar sel yang bersebelahan.
+    /// Rounded to pixels so no thin gaps appear between adjacent cell backgrounds.
     fn cells(&self, row: usize, column: usize, width: usize) -> Rect {
         let snap = |value: f32| (value * self.scale).round() / self.scale;
         let min = self.position(row, column);
@@ -426,7 +426,7 @@ impl Layout {
     }
 }
 
-/// Karakter berurutan dengan warna sama, digambar sekaligus agar jauh lebih hemat.
+/// Consecutive characters of one color, drawn together because it is far cheaper.
 #[derive(Default)]
 struct TextRun {
     text: String,
@@ -485,7 +485,7 @@ mod tests {
     use super::super::session::tests::{pump_until, screen_text, spawn};
     use super::*;
 
-    /// Menjalankan `TerminalView` tanpa jendela, dengan input sintetis dan proses sungguhan.
+    /// Runs `TerminalView` without a window, with synthetic input and a real process.
     struct Harness {
         ctx: egui::Context,
         view: TerminalView,
@@ -516,7 +516,7 @@ mod tests {
             };
             let (view, session) = (&mut self.view, &mut self.session);
             let mut output = self.ctx.run_ui(input, |ui| {
-                let id = ui.scope_id().with("panel");
+                let id = ui.scope_id().with("pane");
                 view.show(ui, id, session, true);
             });
             output.textures_delta.clear();
@@ -528,10 +528,10 @@ mod tests {
             self.frame(Vec::new());
         }
 
-        /// Titik tengah sel tempat teks tampil di layar.
+        /// The center of the cell where a text appears on screen.
         fn cell_center(&self, text: &str, extra_columns: usize) -> Pos2 {
             let screen = screen_text(&self.session);
-            let index = screen.find(text).expect("teks harus ada di layar");
+            let index = screen.find(text).expect("the text must be on screen");
             let columns = self.session.term().columns();
             let metrics = self.view.cell_metrics(&self.ctx);
             let column = index % columns + extra_columns;
@@ -569,21 +569,21 @@ mod tests {
     }
 
     #[test]
-    fn drag_lalu_ctrl_c_menyalin_tanpa_interrupt() {
-        let mut harness = Harness::new(&["/k", "echo teks-seleksi"]);
-        harness.wait_for("teks-seleksi");
-        let start = harness.cell_center("teks-seleksi", 0);
-        // Sisi kiri sel sesudah huruf terakhir, supaya huruf terakhir ikut terpilih.
-        let end = harness.cell_center("teks-seleksi", 12);
+    fn drag_then_ctrl_c_copies_without_interrupt() {
+        let mut harness = Harness::new(&["/k", "echo selected-text"]);
+        harness.wait_for("selected-text");
+        let start = harness.cell_center("selected-text", 0);
+        // The left side of the cell after the last letter, so that letter is selected too.
+        let end = harness.cell_center("selected-text", 13);
         harness.drag(start, end);
 
         let output = harness.frame(vec![Event::Copy]);
-        assert_eq!(copied(&output), Some("teks-seleksi"));
+        assert_eq!(copied(&output), Some("selected-text"));
         assert!(harness.session.term().selection.is_none());
     }
 
     #[test]
-    fn ctrl_c_tanpa_seleksi_mengirim_interrupt() {
+    fn ctrl_c_without_selection_sends_interrupt() {
         let mut harness = Harness::new(&[]);
         harness.frame(vec![Event::Paste("ping -t 127.0.0.1\n".to_owned())]);
         harness.wait_for("127.0.0.1:");
@@ -594,18 +594,18 @@ mod tests {
     }
 
     #[test]
-    fn paste_sampai_ke_shell() {
+    fn paste_reaches_the_shell() {
         let mut harness = Harness::new(&[]);
-        harness.frame(vec![Event::Paste("echo tempel-%OS%\n".to_owned())]);
-        harness.wait_for("tempel-Windows_NT");
+        harness.frame(vec![Event::Paste("echo pasted-%OS%\n".to_owned())]);
+        harness.wait_for("pasted-Windows_NT");
     }
 
     #[test]
-    fn klik_melepas_seleksi() {
-        let mut harness = Harness::new(&["/k", "echo teks-seleksi"]);
-        harness.wait_for("teks-seleksi");
-        let start = harness.cell_center("teks-seleksi", 0);
-        let end = harness.cell_center("teks-seleksi", 11);
+    fn click_clears_the_selection() {
+        let mut harness = Harness::new(&["/k", "echo selected-text"]);
+        harness.wait_for("selected-text");
+        let start = harness.cell_center("selected-text", 0);
+        let end = harness.cell_center("selected-text", 12);
         harness.drag(start, end);
         assert!(harness.session.term().selection.is_some());
 
@@ -614,9 +614,9 @@ mod tests {
     }
 
     #[test]
-    fn roda_mouse_menggulir_riwayat() {
-        let mut harness = Harness::new(&["/k", "for /L %i in (1,1,100) do @echo baris-%i"]);
-        harness.wait_for("baris-100");
+    fn mouse_wheel_scrolls_history() {
+        let mut harness = Harness::new(&["/k", "for /L %i in (1,1,100) do @echo line-%i"]);
+        harness.wait_for("line-100");
         harness.frame(vec![Event::PointerMoved(pos2(200.0, 200.0))]);
         harness.frame(vec![Event::MouseWheel {
             unit: MouseWheelUnit::Line,
@@ -627,7 +627,7 @@ mod tests {
         }]);
         assert_eq!(harness.session.term().grid().display_offset(), 3);
 
-        // Mengetik mengembalikan tampilan ke baris terbaru.
+        // Typing returns the view to the newest line.
         harness.frame(vec![Event::Text("a".to_owned())]);
         assert_eq!(harness.session.term().grid().display_offset(), 0);
     }

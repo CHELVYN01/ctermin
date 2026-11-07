@@ -1,8 +1,8 @@
-//! Mode helper `SSH_ASKPASS`: ssh.exe menjalankan ctermin.exe saat butuh jawaban dari user.
+//! `SSH_ASKPASS` helper mode: ssh.exe runs ctermin.exe when it needs an answer from the user.
 //!
-//! Dengan cara ini password hanya diberikan saat ssh sendiri yang meminta. Teks `password:` di
-//! layar tidak pernah dipakai sebagai pemicu, karena server bisa memalsukannya. Password juga
-//! tidak lewat argumen, environment, maupun terminal.
+//! This way the password is given only when ssh itself asks. `password:` text on
+//! screen is never used as a trigger, because a server can fake it. The password also
+//! never passes through arguments, the environment, or the terminal.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::credentials;
 use super::model::ServerId;
 
-/// Hanya berisi id server, bukan rahasia.
+/// Holds only a server id, not a secret.
 const SERVER_VARIABLE: &str = "CTERMIN_ASKPASS_SERVER";
 
 const EXIT_OK: i32 = 0;
@@ -24,9 +24,9 @@ const EXIT_REFUSED: i32 = 1;
 #[derive(PartialEq, Eq, Debug)]
 enum Prompt {
     Password,
-    /// Pertanyaan ya/tidak, misalnya fingerprint host yang belum dikenal.
+    /// A yes/no question, such as an unknown host fingerprint.
     Confirm,
-    /// Prompt lain (passphrase, kode OTP). Tidak boleh dijawab dengan password.
+    /// Any other prompt (passphrase, OTP code). Must never be answered with the password.
     Unknown,
 }
 
@@ -47,7 +47,7 @@ pub fn configure(command: &mut CommandBuilder, program: &OsStr, server: ServerId
     command.env(SERVER_VARIABLE, server.0.to_string());
 }
 
-/// Dijalankan paling awal di `main`. `Some` berisi kode keluar jika proses ini adalah helper.
+/// Runs first in `main`. `Some` holds the exit code if this process is the helper.
 pub fn run_if_requested() -> Option<i32> {
     let server = std::env::var(SERVER_VARIABLE).ok()?;
     let prompt = std::env::args().nth(1).unwrap_or_default();
@@ -83,12 +83,12 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Dialog Ya/Tidak. Fingerprint tetap diputuskan oleh user, tidak diterima otomatis.
+/// A Yes/No dialog. The user decides on fingerprints; they are never accepted automatically.
 fn confirm(prompt: &str) -> bool {
     let text = wide(prompt);
-    let title = wide("ctermin - konfirmasi SSH");
-    // SAFETY: kedua string diakhiri nol dan hidup selama panggilan; handle NULL berarti tanpa
-    // jendela induk.
+    let title = wide("ctermin - SSH confirmation");
+    // SAFETY: both strings are null-terminated and outlive the call; a NULL handle means no
+    // parent window.
     let result = unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
@@ -105,20 +105,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_password_dikenali() {
+    fn password_prompts_are_recognized() {
         assert_eq!(classify("root@10.0.0.5's password: "), Prompt::Password);
         assert_eq!(classify("(root@host) Password: "), Prompt::Password);
     }
 
     #[test]
-    fn prompt_fingerprint_menjadi_konfirmasi() {
+    fn fingerprint_prompt_becomes_a_confirmation() {
         let prompt = "The authenticity of host 'x' can't be established.\n\
                       Are you sure you want to continue connecting (yes/no/[fingerprint])? ";
         assert_eq!(classify(prompt), Prompt::Confirm);
     }
 
     #[test]
-    fn prompt_lain_tidak_pernah_menerima_password() {
+    fn other_prompts_never_get_the_password() {
         assert_eq!(classify("Verification code: "), Prompt::Unknown);
         assert_eq!(
             classify("Enter passphrase for key 'id_ed25519': "),
@@ -128,17 +128,17 @@ mod tests {
     }
 
     #[test]
-    fn server_tanpa_password_tersimpan_ditolak() {
+    fn server_without_saved_password_is_refused() {
         let unused = (u64::MAX - 2 - u64::from(std::process::id())).to_string();
         assert_eq!(answer(&unused, "root@host's password: "), EXIT_REFUSED);
         assert_eq!(
-            answer("bukan-angka", "root@host's password: "),
+            answer("not-a-number", "root@host's password: "),
             EXIT_REFUSED
         );
     }
 
     #[test]
-    fn perintah_ssh_diberi_askpass_tanpa_password() {
+    fn ssh_command_gets_askpass_without_the_password() {
         let mut command = CommandBuilder::new("ssh.exe");
         configure(&mut command, OsStr::new("ctermin.exe"), ServerId(7));
         let environment: Vec<_> = command.iter_extra_env_as_str().collect();

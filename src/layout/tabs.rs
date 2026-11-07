@@ -1,8 +1,8 @@
-//! Daftar tab dan tab aktif. Tiap tab punya tree panel dan panel fokusnya sendiri.
+//! The tab list and active tab. Each tab has its own pane tree and focused pane.
 
 use super::tree::{Axis, Direction, Layout};
 
-/// Identitas unik satu panel. Tidak pernah dipakai ulang selama aplikasi berjalan.
+/// The unique identity of a pane. Never reused while the app runs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PaneId(u64);
 
@@ -25,12 +25,12 @@ impl Tabs {
         pane
     }
 
-    /// Membuka tab baru di ujung kanan dan langsung mengaktifkannya.
+    /// Opens a new tab at the far right and activates it.
     pub fn open(&mut self) -> PaneId {
         self.open_after(self.tabs.len())
     }
 
-    /// Membuka satu tab berisi `count` panel dalam grid seimbang.
+    /// Opens one tab with `count` panes in a balanced grid.
     pub fn open_group(&mut self, count: usize) -> Vec<PaneId> {
         let panes: Vec<PaneId> = (0..count).map(|_| self.new_pane()).collect();
         if let (Some(layout), Some(first)) = (
@@ -46,7 +46,7 @@ impl Tabs {
         panes
     }
 
-    /// Membuka tab baru tepat di sebelah kanan `index` dan langsung mengaktifkannya.
+    /// Opens a new tab right after `index` and activates it.
     pub fn open_after(&mut self, index: usize) -> PaneId {
         let pane = self.new_pane();
         let position = (index + 1).min(self.tabs.len());
@@ -61,8 +61,8 @@ impl Tabs {
         pane
     }
 
-    /// Menutup tab beserta semua panelnya. Tab aktif tetap sama, kecuali tab itu sendiri yang
-    /// ditutup; dalam hal itu tab di posisi yang sama (atau tab terakhir) menjadi aktif.
+    /// Closes a tab and all its panes. The active tab stays the same, unless that tab is the one
+    /// closed; then the tab at the same position (or the last tab) becomes active.
     pub fn close(&mut self, index: usize) -> Vec<PaneId> {
         if index >= self.tabs.len() {
             return Vec::new();
@@ -75,7 +75,7 @@ impl Tabs {
         tab.layout.panes()
     }
 
-    /// Membagi panel fokus. Panel baru langsung menerima fokus.
+    /// Splits the focused pane. The new pane takes focus.
     pub fn split_focused(&mut self, axis: Axis) -> Option<PaneId> {
         self.tabs.get(self.active)?;
         let new = self.new_pane();
@@ -85,7 +85,7 @@ impl Tabs {
         Some(new)
     }
 
-    /// Menutup panel fokus. Panel terakhir menutup tabnya.
+    /// Closes the focused pane. The last pane closes its tab.
     pub fn close_focused(&mut self) -> Option<PaneId> {
         let tab = self.tabs.get_mut(self.active)?;
         let closed = tab.focused;
@@ -135,7 +135,7 @@ impl Tabs {
         }
     }
 
-    /// Panel fokus pada tab aktif.
+    /// The focused pane of the active tab.
     pub fn active(&self) -> Option<PaneId> {
         self.tabs.get(self.active).map(|tab| tab.focused)
     }
@@ -152,12 +152,12 @@ impl Tabs {
         self.tabs.get_mut(self.active).map(|tab| &mut tab.layout)
     }
 
-    /// Panel fokus tiap tab, urut dari kiri. Judul tab mengikuti panel ini.
+    /// The focused pane of each tab, from the left. The tab title follows this pane.
     pub fn focused_panes(&self) -> Vec<PaneId> {
         self.tabs.iter().map(|tab| tab.focused).collect()
     }
 
-    /// Jumlah panel tiap tab, urut dari kiri.
+    /// The pane count of each tab, from the left.
     pub fn pane_counts(&self) -> Vec<usize> {
         self.tabs
             .iter()
@@ -183,18 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn tab_baru_menjadi_aktif_dengan_id_unik() {
+    fn new_tab_becomes_active_with_a_unique_id() {
         let mut tabs = tabs(2);
         let pane = tabs.open();
         assert_eq!(tabs.active(), Some(pane));
         assert_eq!(tabs.active_index(), 2);
 
         tabs.close(2);
-        assert_ne!(tabs.open(), pane, "id tidak boleh dipakai ulang");
+        assert_ne!(tabs.open(), pane, "ids must not be reused");
     }
 
     #[test]
-    fn tab_duplikat_berada_tepat_di_kanan_sumbernya() {
+    fn duplicate_tab_sits_right_of_its_source() {
         let mut tabs = tabs(3);
         let last = tabs.focused_panes()[2];
         let new = tabs.open_after(0);
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn grup_panel_menjadi_satu_tab_aktif() {
+    fn pane_group_becomes_one_active_tab() {
         let mut tabs = tabs(1);
         let panes = tabs.open_group(3);
 
@@ -213,18 +213,18 @@ mod tests {
         assert_eq!(tabs.active_index(), 1);
         assert_eq!(tabs.active(), panes.first().copied());
         assert!(tabs.open_group(0).is_empty());
-        assert_eq!(tabs.pane_counts().len(), 2, "grup kosong tidak membuat tab");
+        assert_eq!(tabs.pane_counts().len(), 2, "an empty group creates no tab");
     }
 
     #[test]
-    fn jumlah_panel_tiap_tab() {
+    fn pane_count_per_tab() {
         let mut tabs = tabs(2);
         tabs.split_focused(Axis::Horizontal);
         assert_eq!(tabs.pane_counts(), vec![1, 2]);
     }
 
     #[test]
-    fn menutup_tab_aktif_memilih_tab_di_posisi_sama() {
+    fn closing_the_active_tab_selects_the_same_position() {
         let mut tabs = tabs(3);
         let last = tabs.focused_panes()[2];
         tabs.select(1);
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn menutup_tab_aktif_paling_kanan_memilih_tab_sebelumnya() {
+    fn closing_the_rightmost_active_tab_selects_the_previous() {
         let mut tabs = tabs(3);
         let middle = tabs.focused_panes()[1];
         tabs.close(2);
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn menutup_tab_lain_tidak_mengubah_tab_aktif() {
+    fn closing_another_tab_keeps_the_active_tab() {
         let mut tabs = tabs(3);
         let active = tabs.focused_panes()[2];
         tabs.close(0);
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn menutup_tab_terakhir_mengosongkan_daftar() {
+    fn closing_the_last_tab_empties_the_list() {
         let mut tabs = tabs(1);
         assert_eq!(tabs.close(0).len(), 1);
         assert!(tabs.is_empty());
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn pindah_tab_berputar() {
+    fn tab_switching_wraps() {
         let mut tabs = tabs(3);
         tabs.next();
         assert_eq!(tabs.active_index(), 0);
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn operasi_tanpa_tab_tidak_panik() {
+    fn operations_without_tabs_do_not_panic() {
         let mut tabs = Tabs::default();
         tabs.next();
         tabs.previous();
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn split_memindahkan_fokus_ke_panel_baru() {
+    fn split_moves_focus_to_the_new_pane() {
         let mut tabs = tabs(1);
         let first = tabs.active();
         let new = tabs.split_focused(Axis::Horizontal);
@@ -295,27 +295,27 @@ mod tests {
     }
 
     #[test]
-    fn menutup_panel_fokus_memindahkan_fokus_ke_saudara() {
+    fn closing_the_focused_pane_moves_focus_to_its_sibling() {
         let mut tabs = tabs(1);
-        let first = tabs.active().expect("ada tab");
+        let first = tabs.active().expect("has a tab");
         let second = tabs
             .split_focused(Axis::Horizontal)
-            .expect("split berhasil");
+            .expect("split succeeded");
 
         assert_eq!(tabs.close_focused(), Some(second));
         assert_eq!(tabs.active(), Some(first));
-        assert!(!tabs.is_empty(), "tab tetap ada");
+        assert!(!tabs.is_empty(), "the tab remains");
     }
 
     #[test]
-    fn menutup_panel_terakhir_menutup_tabnya() {
+    fn closing_the_last_pane_closes_its_tab() {
         let mut tabs = tabs(2);
         tabs.close_focused();
         assert_eq!(tabs.focused_panes().len(), 1);
     }
 
     #[test]
-    fn menutup_tab_mengembalikan_semua_panel() {
+    fn closing_a_tab_returns_all_panes() {
         let mut tabs = tabs(1);
         tabs.split_focused(Axis::Horizontal);
         tabs.split_focused(Axis::Vertical);
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn fokus_tiap_tab_disimpan_sendiri() {
+    fn each_tab_keeps_its_own_focus() {
         let mut tabs = tabs(2);
         let second_tab = tabs.split_focused(Axis::Horizontal);
         tabs.select(0);
@@ -332,24 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn fokus_mengikuti_arah_dan_klik() {
+    fn focus_follows_direction_and_click() {
         let mut tabs = tabs(1);
-        let left = tabs.active().expect("ada tab");
+        let left = tabs.active().expect("has a tab");
         let right = tabs
             .split_focused(Axis::Horizontal)
-            .expect("split berhasil");
+            .expect("split succeeded");
 
         tabs.focus_direction(Direction::Left);
         assert_eq!(tabs.active(), Some(left));
         tabs.focus_direction(Direction::Left);
-        assert_eq!(tabs.active(), Some(left), "tidak bergerak di tepi");
+        assert_eq!(tabs.active(), Some(left), "no movement at the edge");
 
         tabs.focus(right);
         assert_eq!(tabs.active(), Some(right));
     }
 
     #[test]
-    fn fokus_mengabaikan_panel_dari_tab_lain() {
+    fn focus_ignores_panes_from_other_tabs() {
         let mut tabs = tabs(2);
         let other_tab = tabs.focused_panes()[0];
         let active = tabs.active();

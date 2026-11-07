@@ -1,7 +1,7 @@
-//! Satu sesi terminal: menghubungkan PTY dengan emulator alacritty_terminal.
+//! One terminal session: connects a PTY to the alacritty_terminal emulator.
 //!
-//! `Term` hanya disentuh di UI thread, sehingga tidak perlu lock. Output PTY datang lewat
-//! channel dan diproses bertahap di [`TerminalSession::pump`].
+//! `Term` is only touched on the UI thread, so no lock is needed. PTY output arrives through a
+//! channel and is processed in steps in [`TerminalSession::pump`].
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -20,14 +20,14 @@ use super::colors::Palette;
 use super::input::encode_paste;
 use super::pty::{Notify, Pty, PtyEvent};
 
-/// Batas output yang diproses per frame, supaya perintah yang sangat ramai tidak membekukan UI.
+/// Output processed per frame, so a very chatty command cannot freeze the UI.
 const MAX_BYTES_PER_PUMP: usize = 1024 * 1024;
 const MIN_COLUMNS: usize = 2;
 const MIN_LINES: usize = 1;
 const MAX_TITLE_CHARS: usize = 256;
 const EXE_SUFFIX: &str = ".exe";
 
-/// Ukuran grid dalam sel.
+/// Grid size in cells.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct GridSize {
     pub columns: usize,
@@ -66,7 +66,7 @@ impl GridSize {
     }
 }
 
-/// Meneruskan kejadian dari `Term` agar bisa dibalas setelah parser selesai.
+/// Forwards events from `Term` so they can be answered after the parser finishes.
 #[derive(Clone)]
 pub struct EventProxy(Sender<Event>);
 
@@ -85,7 +85,7 @@ pub struct TerminalSession {
     size: GridSize,
     cell_pixels: (u16, u16),
     exited: bool,
-    /// Nama program, dipakai sebagai judul selama aplikasi belum mengirim judul sendiri.
+    /// The program name, used as the title until the app sends its own.
     program: String,
     title: Option<String>,
     server_name: Option<String>,
@@ -118,14 +118,14 @@ impl TerminalSession {
             .unwrap_or(&self.program)
     }
 
-    /// Menandai sesi ini sebagai koneksi ke server: judulnya tetap nama server, walaupun
-    /// server mengirim judul sendiri.
+    /// Marks this session as a server connection: its title stays the server name, even if the
+    /// server sends its own.
     pub fn set_server_name(&mut self, name: &str) {
         self.server_name = Some(name.to_owned());
     }
 
-    /// Memproses output yang sudah tiba. Mengembalikan kapan frame berikutnya dibutuhkan
-    /// tanpa menunggu output baru.
+    /// Processes the output that has arrived. Returns when the next frame is needed
+    /// without waiting for new output.
     pub fn pump(&mut self) -> Option<Duration> {
         let mut processed = 0;
         while processed < MAX_BYTES_PER_PUMP {
@@ -162,7 +162,7 @@ impl TerminalSession {
         *self.term.mode()
     }
 
-    /// Mengirim input dari keyboard: tampilan kembali ke baris terbaru dan seleksi dilepas.
+    /// Sends keyboard input: the view returns to the newest line and the selection clears.
     pub fn send_input(&mut self, bytes: Vec<u8>) {
         self.term.selection = None;
         self.term.scroll_display(Scroll::Bottom);
@@ -172,6 +172,28 @@ impl TerminalSession {
     pub fn paste(&mut self, text: &str) {
         let bracketed = self.mode().contains(TermMode::BRACKETED_PASTE);
         self.send_input(encode_paste(text, bracketed));
+    }
+
+    /// The last lines of the screen and history, up to the cursor. Used as AI context.
+    pub fn recent_output(&self, lines: usize) -> String {
+        let grid = self.term.grid();
+        let end_line = grid.cursor.point.line;
+        let count = i32::try_from(lines).unwrap_or(i32::MAX);
+        let start_line = Line((end_line.0 + 1).saturating_sub(count)).max(grid.topmost_line());
+        let start = Point::new(start_line, Column(0));
+        let end = Point::new(end_line, grid.last_column());
+        self.term.bounds_to_string(start, end).trim().to_owned()
+    }
+
+    /// The line the cursor is on, usually the shell prompt.
+    pub fn prompt_line(&self) -> String {
+        self.recent_output(1)
+    }
+
+    /// Inserts a command on the prompt line without running it. The command must already be free of
+    /// newlines and control characters.
+    pub fn insert_command(&mut self, command: &str) {
+        self.send_input(command.as_bytes().to_vec());
     }
 
     pub fn resize(&mut self, size: GridSize, cell_pixels: (u16, u16)) {
@@ -203,7 +225,7 @@ impl TerminalSession {
         self.term.selection = None;
     }
 
-    /// Mengambil teks yang terseleksi lalu melepas seleksinya.
+    /// Takes the selected text and clears the selection.
     pub fn take_selection(&mut self) -> Option<String> {
         let text = self.term.selection_to_string();
         self.term.selection = None;
@@ -220,21 +242,21 @@ impl TerminalSession {
 
     fn mark_exited(&mut self, code: Option<u32>) {
         self.exited = true;
-        let status = code.map_or_else(|| "tidak diketahui".to_owned(), |code| code.to_string());
+        let status = code.map_or_else(|| "unknown".to_owned(), |code| code.to_string());
         let (ended, next) = if self.server_name.is_some() {
-            ("Koneksi terputus", "menyambung ulang")
+            ("Disconnected", "reconnect")
         } else {
-            ("Proses selesai", "memulai shell baru")
+            ("Process exited", "start a new shell")
         };
-        let message = format!("\r\n[{ended}, kode {status}. Tekan Enter untuk {next}.]");
+        let message = format!("\r\n[{ended}, code {status}. Press Enter to {next}.]");
         self.processor.advance(&mut self.term, message.as_bytes());
     }
 
-    /// Membalas permintaan aplikasi. Ini wajib: ConPTY dan banyak aplikasi menunggu jawaban
-    /// atas query seperti posisi kursor.
+    /// Answers application requests. This is required: ConPTY and many apps wait for replies to
+    /// queries such as the cursor position.
     ///
-    /// Akses clipboard lewat OSC 52 sengaja diabaikan, supaya server jauh tidak bisa membaca
-    /// atau menimpa clipboard user.
+    /// Clipboard access through OSC 52 is ignored on purpose, so a remote server cannot read
+    /// or overwrite the user's clipboard.
     fn answer_term_events(&mut self) {
         while let Ok(event) = self.term_events.try_recv() {
             match event {
@@ -261,7 +283,7 @@ impl TerminalSession {
         }
     }
 
-    /// Aplikasi yang berhenti di tengah synchronized update tidak boleh membekukan layar.
+    /// An app that stops in the middle of a synchronized update must not freeze the screen.
     fn expire_synchronized_update(&mut self) -> Option<Duration> {
         let deadline = self.processor.sync_timeout().sync_timeout()?;
         let now = Instant::now();
@@ -285,7 +307,7 @@ impl TerminalSession {
     }
 }
 
-/// Nama file program tanpa folder dan ekstensi.
+/// A program's file name without folder or extension.
 fn program_name(command: &CommandBuilder) -> String {
     command
         .get_argv()
@@ -306,9 +328,9 @@ fn executable_name(path: &str) -> String {
     }
 }
 
-/// Merapikan judul dari aplikasi. Judul bisa datang dari server jauh, jadi karakter kontrol
-/// dibuang dan panjangnya dibatasi. ConPTY mengirim path lengkap shell, yang cukup ditampilkan
-/// sebagai nama programnya.
+/// Tidies a title from an app. Titles can come from a remote server, so control characters
+/// are removed and the length is capped. ConPTY sends the shell's full path, which is shown
+/// as just the program name.
 fn clean_title(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .chars()
@@ -338,7 +360,7 @@ pub(super) mod tests {
         let mut command = CommandBuilder::new("cmd.exe");
         command.args(args);
         TerminalSession::spawn(command, GridSize::new(100, 30), Arc::new(|| {}))
-            .expect("sesi harus berhasil dibuat")
+            .expect("the session must be created")
     }
 
     pub fn screen_text(session: &TerminalSession) -> String {
@@ -346,19 +368,19 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn judul_awal_adalah_nama_program() {
+    fn initial_title_is_the_program_name() {
         let session = spawn(&["/c", "exit 0"]);
         assert_eq!(session.title(), "cmd");
     }
 
     #[test]
-    fn judul_dari_aplikasi_dipakai() {
-        let mut session = spawn(&["/k", "title judul-tes"]);
-        pump_until(&mut session, |s| s.title().contains("judul-tes"));
+    fn app_title_is_used() {
+        let mut session = spawn(&["/k", "title test-title"]);
+        pump_until(&mut session, |s| s.title().contains("test-title"));
     }
 
     #[test]
-    fn nama_program_dari_path() {
+    fn program_name_from_path() {
         let path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
         assert_eq!(executable_name(path), "powershell");
         assert_eq!(executable_name("cmd.EXE"), "cmd");
@@ -368,7 +390,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn judul_dirapikan() {
+    fn titles_are_cleaned() {
         assert_eq!(
             clean_title(r"C:\WINDOWS\system32\cmd.exe").as_deref(),
             Some("cmd")
@@ -391,7 +413,7 @@ pub(super) mod tests {
         while !done(session) {
             assert!(
                 start.elapsed() < TIMEOUT,
-                "waktu habis, isi layar: {}",
+                "timed out, screen contents: {}",
                 screen_text(session).trim()
             );
             session.pump();
@@ -400,31 +422,31 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn output_proses_masuk_ke_grid() {
+    fn process_output_reaches_the_grid() {
         let mut session = spawn(&["/c", "echo ctermin-ok"]);
         pump_until(&mut session, |s| s.exited);
         assert!(screen_text(&session).contains("ctermin-ok"));
-        assert!(screen_text(&session).contains("kode 0"));
+        assert!(screen_text(&session).contains("code 0"));
     }
 
     #[test]
-    fn kode_keluar_dilaporkan() {
+    fn exit_code_is_reported() {
         let mut session = spawn(&["/c", "exit 7"]);
         pump_until(&mut session, |s| s.exited);
-        assert!(screen_text(&session).contains("kode 7"));
+        assert!(screen_text(&session).contains("code 7"));
     }
 
     #[test]
-    fn input_sampai_ke_proses() {
+    fn input_reaches_the_process() {
         let mut session = spawn(&[]);
-        session.send_input(b"echo hasil-%OS%\r".to_vec());
+        session.send_input(b"echo result-%OS%\r".to_vec());
         pump_until(&mut session, |s| {
-            screen_text(s).contains("hasil-Windows_NT")
+            screen_text(s).contains("result-Windows_NT")
         });
     }
 
     #[test]
-    fn resize_mengubah_grid_dan_proses_melihatnya() {
+    fn resize_changes_the_grid_and_the_process_sees_it() {
         let mut session = spawn(&[]);
         session.resize(GridSize::new(70, 20), (8, 16));
         assert_eq!(session.term.columns(), 70);
@@ -438,7 +460,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn menutup_sesi_menghentikan_semua_thread() {
+    fn closing_a_session_stops_all_threads() {
         let mut session = spawn(&[]);
         pump_until(&mut session, |s| !screen_text(s).trim().is_empty());
         let threads = session.pty.threads_alive();
@@ -448,32 +470,32 @@ pub(super) mod tests {
 
         let start = Instant::now();
         while threads.upgrade().is_some() {
-            assert!(start.elapsed() < TIMEOUT, "thread PTY masih hidup");
+            assert!(start.elapsed() < TIMEOUT, "PTY threads are still alive");
             thread::sleep(Duration::from_millis(10));
         }
     }
 
     #[test]
-    fn thread_berhenti_saat_proses_keluar_sendiri() {
+    fn threads_stop_when_the_process_exits_itself() {
         let mut session = spawn(&["/c", "exit 0"]);
         let threads = session.pty.threads_alive();
         pump_until(&mut session, |s| s.exited);
 
         let start = Instant::now();
         while threads.upgrade().is_some() {
-            assert!(start.elapsed() < TIMEOUT, "thread PTY masih hidup");
+            assert!(start.elapsed() < TIMEOUT, "PTY threads are still alive");
             thread::sleep(Duration::from_millis(10));
         }
     }
 
     #[test]
-    fn seleksi_dan_scrollback() {
-        let mut session = spawn(&["/c", "for /L %i in (1,1,200) do @echo baris-%i"]);
+    fn selection_and_scrollback() {
+        let mut session = spawn(&["/c", "for /L %i in (1,1,200) do @echo line-%i"]);
         pump_until(&mut session, |s| s.exited);
 
         session.scroll(Scroll::Top);
         assert!(session.term.grid().display_offset() > 0);
-        assert!(screen_text(&session).contains("baris-1"));
+        assert!(screen_text(&session).contains("line-1"));
 
         session.start_selection(0, 0, Side::Left);
         session.update_selection(5, 0, Side::Right);

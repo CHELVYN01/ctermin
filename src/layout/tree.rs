@@ -1,4 +1,4 @@
-//! Tree split pane: tiap daun adalah satu panel, tiap cabang membagi ruang menjadi dua.
+//! The split pane tree: each leaf is one pane, each branch divides its space in two.
 
 use eframe::egui::{pos2, vec2, Pos2, Rect};
 
@@ -8,19 +8,19 @@ const DEFAULT_RATIO: f32 = 0.5;
 const MIN_PANE_SIZE: f32 = 48.0;
 const EPSILON: f32 = 0.001;
 
-/// Tebal pembatas di antara dua panel.
+/// The thickness of the divider between two panes.
 pub const DIVIDER_THICKNESS: f32 = 2.0;
 
-/// Arah pembagian ruang.
+/// The direction space is divided in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Axis {
-    /// Panel berdampingan kiri dan kanan.
+    /// Panes side by side, left and right.
     Horizontal,
-    /// Panel bertumpuk atas dan bawah.
+    /// Panes stacked, top and bottom.
     Vertical,
 }
 
-/// Arah pindah fokus.
+/// The direction focus moves in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Direction {
     Left,
@@ -29,7 +29,7 @@ pub enum Direction {
     Down,
 }
 
-/// Cabang pada jalur dari akar tree menuju sebuah split.
+/// A branch on the path from the tree root to a split.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Branch {
     First,
@@ -47,7 +47,7 @@ pub enum Layout {
     },
 }
 
-/// Pembatas yang bisa di-drag, beserta split yang diaturnya.
+/// A draggable divider and the split it controls.
 #[derive(Debug)]
 pub struct Divider {
     pub path: Vec<Branch>,
@@ -57,7 +57,7 @@ pub struct Divider {
 }
 
 impl Divider {
-    /// Rasio split agar pembatas berada di posisi pointer, tanpa membuat panel terlalu kecil.
+    /// The split ratio that puts the divider at the pointer, without making a pane too small.
     pub fn ratio_at(&self, pointer: Pos2) -> f32 {
         let (start, extent, position) = match self.axis {
             Axis::Horizontal => (self.parent.left(), self.parent.width(), pointer.x),
@@ -73,7 +73,7 @@ impl Divider {
 }
 
 impl Layout {
-    /// Menyusun panel sebagai grid seimbang, dengan arah bergantian di tiap tingkat.
+    /// Arranges panes in a balanced grid, alternating direction at each level.
     pub fn balanced(panes: &[PaneId], axis: Axis) -> Option<Self> {
         match panes {
             [] => None,
@@ -95,7 +95,7 @@ impl Layout {
         }
     }
 
-    /// Membagi panel `target`. Panel baru berada di kanan atau bawah.
+    /// Splits pane `target`. The new pane goes right or below.
     pub fn split(&mut self, target: PaneId, new: PaneId, axis: Axis) -> bool {
         match self {
             Self::Leaf(pane) if *pane == target => {
@@ -112,7 +112,7 @@ impl Layout {
         }
     }
 
-    /// Menghapus panel; saudaranya mengambil seluruh ruang induknya. `None` jika tree kosong.
+    /// Removes a pane; its sibling takes the parent's space. `None` if the tree becomes empty.
     pub fn remove(self, target: PaneId) -> Option<Self> {
         match self {
             Self::Leaf(pane) if pane == target => None,
@@ -130,7 +130,7 @@ impl Layout {
         }
     }
 
-    /// Panel yang sebaiknya menerima fokus setelah `target` ditutup.
+    /// The pane that should take focus after `target` closes.
     pub fn sibling_of(&self, target: PaneId) -> Option<PaneId> {
         let Self::Split { a, b, .. } = self else {
             return None;
@@ -158,7 +158,7 @@ impl Layout {
             .collect()
     }
 
-    /// Kotak layar tiap panel di dalam `rect`.
+    /// The screen rect of each pane inside `rect`.
     pub fn arrange(&self, rect: Rect, gap: f32) -> Vec<(PaneId, Rect)> {
         let mut result = Vec::new();
         self.collect_rects(rect, gap, &mut result);
@@ -212,8 +212,8 @@ impl Layout {
         }
     }
 
-    /// Panel terdekat dari `from` ke arah tertentu. Jika ada beberapa, dipilih yang paling
-    /// banyak bersinggungan.
+    /// The closest pane from `from` in a direction. If there are several, the one sharing the
+    /// longest edge is chosen.
     pub fn neighbor(&self, from: PaneId, direction: Direction) -> Option<PaneId> {
         let rects = self.arrange(unit_rect(), 0.0);
         let (_, current) = rects.iter().find(|(pane, _)| *pane == from)?;
@@ -229,12 +229,12 @@ impl Layout {
     }
 }
 
-/// Ruang acuan untuk perhitungan yang hanya bergantung pada proporsi.
+/// A reference space for calculations that depend only on proportions.
 fn unit_rect() -> Rect {
     Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 1000.0))
 }
 
-/// Jarak ke kotak lain pada arah tertentu dan panjang sisi yang bersinggungan.
+/// The distance to another rect in a direction, and the length of their shared edge.
 fn reach(from: Rect, to: Rect, direction: Direction) -> (f32, f32) {
     let vertical = from.top().max(to.top())..from.bottom().min(to.bottom());
     let horizontal = from.left().max(to.left())..from.right().min(to.right());
@@ -246,7 +246,7 @@ fn reach(from: Rect, to: Rect, direction: Direction) -> (f32, f32) {
     }
 }
 
-/// Membagi kotak menjadi bagian pertama, pembatas, dan bagian kedua.
+/// Splits a rect into the first part, the divider, and the second part.
 fn split_rect(rect: Rect, axis: Axis, ratio: f32, gap: f32) -> (Rect, Rect, Rect) {
     match axis {
         Axis::Horizontal => {
@@ -282,7 +282,7 @@ mod tests {
         Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))
     }
 
-    /// Empat panel: A di kiri, B di kanan atas, lalu C dan D di kanan bawah.
+    /// Four panes: A on the left, B top right, then C and D bottom right.
     ///
     /// ```text
     /// +---+-------+
@@ -301,9 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn grid_seimbang_memberi_ruang_sama_rata() {
+    fn balanced_grid_shares_space_evenly() {
         let panes: [PaneId; 4] = ids();
-        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("ada panel");
+        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("has a pane");
         let rects = layout.arrange(screen(), 0.0);
 
         assert_eq!(rects.len(), 4);
@@ -313,9 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn grid_ganjil_tetap_proporsional() {
+    fn odd_grid_stays_proportional() {
         let panes: [PaneId; 3] = ids();
-        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("ada panel");
+        let layout = Layout::balanced(&panes, Axis::Horizontal).expect("has a pane");
         let rects = layout.arrange(screen(), 0.0);
         assert_eq!(rects.len(), 3);
         assert!(rects[0].1.width() > rects[2].1.width());
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn split_membagi_dua_dengan_panel_baru_di_kanan() {
+    fn split_divides_in_two_with_the_new_pane_on_the_right() {
         let [a, b] = ids();
         let mut layout = Layout::Leaf(a);
         assert!(layout.split(a, b, Axis::Horizontal));
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn split_atas_bawah() {
+    fn top_bottom_split() {
         let [a, b] = ids();
         let mut layout = Layout::Leaf(a);
         layout.split(a, b, Axis::Vertical);
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn split_target_tidak_ada_tidak_mengubah_layout() {
+    fn split_of_missing_target_keeps_the_layout() {
         let [a, b, c] = ids();
         let mut layout = Layout::Leaf(a);
         assert!(!layout.split(b, c, Axis::Horizontal));
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn split_bertingkat_mengisi_seluruh_ruang_tanpa_tumpang_tindih() {
+    fn nested_splits_fill_the_space_without_overlap() {
         let (layout, panes) = four_panes();
         let rects = layout.arrange(screen(), DIVIDER_THICKNESS);
         assert_eq!(rects.len(), panes.len());
@@ -369,29 +369,29 @@ mod tests {
         for (index, (_, first)) in rects.iter().enumerate() {
             for (_, second) in &rects[index + 1..] {
                 let overlap = first.intersect(*second);
-                assert!(!overlap.is_positive(), "{first:?} menimpa {second:?}");
+                assert!(!overlap.is_positive(), "{first:?} overlaps {second:?}");
             }
         }
     }
 
     #[test]
-    fn menutup_panel_memberi_ruangnya_ke_saudara() {
+    fn closing_a_pane_gives_its_space_to_the_sibling() {
         let [a, b, c] = ids();
         let mut layout = Layout::Leaf(a);
         layout.split(a, b, Axis::Horizontal);
         layout.split(b, c, Axis::Vertical);
 
-        let layout = layout.remove(c).expect("masih ada panel");
+        let layout = layout.remove(c).expect("a pane remains");
         let rects = layout.arrange(screen(), DIVIDER_THICKNESS);
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[1].0, b);
-        assert_eq!(rects[1].1.height(), 600.0, "b mengambil seluruh tinggi");
+        assert_eq!(rects[1].1.height(), 600.0, "b takes the full height");
     }
 
     #[test]
-    fn menutup_panel_di_tengah_tidak_merusak_sisanya() {
+    fn closing_a_middle_pane_keeps_the_rest_intact() {
         let (layout, [a, b, c, d]) = four_panes();
-        let layout = layout.remove(b).expect("masih ada panel");
+        let layout = layout.remove(b).expect("a pane remains");
         assert_eq!(layout.panes(), vec![a, c, d]);
 
         let rects = layout.arrange(screen(), DIVIDER_THICKNESS);
@@ -405,13 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn menutup_panel_terakhir_mengosongkan_tree() {
+    fn closing_the_last_pane_empties_the_tree() {
         let [a] = ids();
         assert_eq!(Layout::Leaf(a).remove(a), None);
     }
 
     #[test]
-    fn saudara_panel_untuk_fokus_berikutnya() {
+    fn sibling_pane_for_the_next_focus() {
         let (layout, [a, b, c, d]) = four_panes();
         assert_eq!(layout.sibling_of(c), Some(d));
         assert_eq!(layout.sibling_of(d), Some(c));
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn tetangga_mengikuti_posisi_di_layar() {
+    fn neighbors_follow_screen_position() {
         let (layout, [a, b, c, d]) = four_panes();
         assert_eq!(layout.neighbor(a, Direction::Right), Some(b));
         assert_eq!(layout.neighbor(b, Direction::Left), Some(a));
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn tidak_ada_tetangga_di_tepi() {
+    fn no_neighbor_at_the_edges() {
         let (layout, [a, b, _, d]) = four_panes();
         assert_eq!(layout.neighbor(a, Direction::Left), None);
         assert_eq!(layout.neighbor(a, Direction::Up), None);
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn rasio_mengikuti_pointer_dengan_batas_ukuran_panel() {
+    fn ratio_follows_the_pointer_within_pane_limits() {
         let [a, b] = ids();
         let mut layout = Layout::Leaf(a);
         layout.split(a, b, Axis::Horizontal);
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn rasio_aman_saat_ruang_sangat_kecil() {
+    fn ratio_is_safe_in_tiny_spaces() {
         let [a, b] = ids();
         let mut layout = Layout::Leaf(a);
         layout.split(a, b, Axis::Vertical);
@@ -472,13 +472,13 @@ mod tests {
     }
 
     #[test]
-    fn jalur_mengubah_rasio_split_yang_tepat() {
+    fn path_changes_the_right_split_ratio() {
         let (mut layout, [_, b, c, d]) = four_panes();
         let dividers = layout.dividers(screen());
         let nested = dividers
             .iter()
             .find(|divider| divider.path == [Branch::Second, Branch::Second])
-            .expect("split C dan D harus punya pembatas");
+            .expect("the C and D split must have a divider");
         let path = nested.path.clone();
 
         layout.set_ratio(&path, 0.25);
@@ -486,10 +486,10 @@ mod tests {
         let rects = layout.arrange(screen(), DIVIDER_THICKNESS);
         let rect = |pane| rects.iter().find(|(id, _)| *id == pane).map(|(_, r)| *r);
         let (b, c, d) = (rect(b), rect(c), rect(d));
-        assert!(c.expect("c ada").width() < d.expect("d ada").width() / 2.0);
+        assert!(c.expect("c exists").width() < d.expect("d exists").width() / 2.0);
         assert!(
-            b.expect("b ada").width() > 300.0,
-            "split lain tidak berubah"
+            b.expect("b exists").width() > 300.0,
+            "other splits are unchanged"
         );
     }
 }

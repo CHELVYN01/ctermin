@@ -7,13 +7,18 @@ use std::time::Duration;
 use eframe::egui::{self, pos2, Id, Key, Rect, UiBuilder, ViewportCommand};
 use portable_pty::CommandBuilder;
 
-use crate::config::ServerRepository;
+use crate::ai::client::{AiClient, AiResult};
+use crate::ai::danger::danger_reason;
+use crate::ai::prompt::{clean_suggestion, explain_prompt, suggest_prompt, AiPrompt, PaneContext};
+use crate::ai::settings::ProviderKind;
+use crate::config::{ConfigFile, ServerRepository, CONFIG_FILE, SERVERS_FILE};
 use crate::layout::{Axis, PaneId, Tabs, DIVIDER_THICKNESS};
 use crate::ssh::command::ssh_command;
 use crate::ssh::model::{AuthMethod, FolderId, Server, ServerId};
 use crate::ssh::{credentials, import};
 use crate::terminal::{default_shell, GridSize, TerminalSession, TerminalView};
-use crate::ui::dialogs::{self, DialogResult, FolderForm, ServerForm};
+use crate::ui::ai_bar::{AiBar, AiBarAction, AiPhase, RequestKind};
+use crate::ui::dialogs::{self, AiSettingsForm, DialogResult, FolderForm, ServerForm};
 use crate::ui::shortcuts::{self, Shortcut};
 use crate::ui::sidebar::{ServerStatus, Sidebar, SidebarAction, SIDEBAR_WIDTH};
 use crate::ui::split_view;
@@ -22,9 +27,12 @@ use crate::ui::tab_bar::{self, ServerGroup, TabAction, TabItem, BAR_HEIGHT};
 const INITIAL_COLUMNS: usize = 80;
 const INITIAL_LINES: usize = 24;
 const APP_NAME: &str = "ctermin";
-const FAILED_TAB_TITLE: &str = "Gagal";
+const FAILED_TAB_TITLE: &str = "Failed";
+/// How many of the last lines are offered for the AI to explain.
+const EXPLAIN_LINES: usize = 40;
+const TARGET_CLOSED: &str = "The target pane is no longer active.";
 
-/// Apa yang dijalankan sebuah panel. Split, duplikat, dan sambung ulang memakai sumber yang sama.
+/// What a pane runs. Split, duplicate, and reconnect use the same source.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PaneSource {
     Shell,
@@ -33,7 +41,7 @@ enum PaneSource {
 
 struct Pane {
     source: PaneSource,
-    /// Sesi terminal, atau pesan error jika gagal dijalankan.
+    /// The terminal session, or an error message if it failed to start.
     session: Result<TerminalSession, String>,
 }
 
@@ -42,9 +50,10 @@ enum Dialog {
     Folder(FolderForm),
     DeleteServer(ServerId, String),
     DeleteFolder(FolderId, String),
+    AiSettings(AiSettingsForm),
 }
 
-/// State aplikasi utama.
+/// Main application state.
 pub struct CterminApp {
     tabs: Tabs,
     panes: HashMap<PaneId, Pane>,
@@ -56,13 +65,17 @@ pub struct CterminApp {
     sidebar_visible: bool,
     dialog: Option<Dialog>,
     notice: Option<String>,
+    config: ConfigFile,
+    ai: AiClient,
+    ai_bar: Option<AiBar>,
 }
 
 impl CterminApp {
     pub fn new(ctx: &egui::Context) -> Self {
-        let (repository, warning) = ServerRepository::open_default();
-        let mut app = Self::with_parts(ctx, default_shell, repository);
-        app.notice = warning;
+        let (repository, server_warning) = ServerRepository::open_default(SERVERS_FILE);
+        let (config, config_warning) = ConfigFile::open_default(CONFIG_FILE);
+        let mut app = Self::with_parts(ctx, default_shell, repository, config);
+        app.notice = server_warning.or(config_warning);
         app
     }
 
@@ -70,9 +83,10 @@ impl CterminApp {
         ctx: &egui::Context,
         shell: fn() -> CommandBuilder,
         repository: ServerRepository,
+        config: ConfigFile,
     ) -> Self {
         ctx.set_theme(egui::Theme::Dark);
-        // Ctrl+Plus dan Ctrl+Minus harus sampai ke terminal, bukan mengubah zoom egui.
+        // Ctrl+Plus and Ctrl+Minus must reach the terminal, not change egui's zoom.
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
         let mut app = Self {
             tabs: Tabs::default(),
@@ -85,6 +99,9 @@ impl CterminApp {
             sidebar_visible: true,
             dialog: None,
             notice: None,
+            config,
+            ai: AiClient::new(),
+            ai_bar: None,
         };
         app.open_tab(ctx, PaneSource::Shell);
         app
@@ -104,7 +121,7 @@ impl CterminApp {
         }
     }
 
-    /// Melepas sesi akan mematikan proses dan menghentikan thread PTY-nya.
+    /// Dropping a session kills the process and stops its PTY threads.
     fn close_tab(&mut self, index: usize) {
         for pane in self.tabs.close(index) {
             self.panes.remove(&pane);
@@ -127,9 +144,9 @@ impl CterminApp {
     fn spawn_pane(&self, ctx: &egui::Context, source: PaneSource) -> Pane {
         let session = match source {
             PaneSource::Shell => self.spawn_session(ctx, (self.shell)()),
-            PaneSource::Server(id) => match self.repository.store.server(id) {
+            PaneSource::Server(id) => match self.repository.data.server(id) {
                 Some(server) => self.spawn_server(ctx, server),
-                None => Err("Server ini sudah dihapus.".to_owned()),
+                None => Err("This server has been deleted.".to_owned()),
             },
         };
         Pane { source, session }
@@ -157,8 +174,8 @@ impl CterminApp {
         TerminalSession::spawn(command, size, notify).map_err(|err| format!("{err:#}"))
     }
 
-    /// Semua panel diproses, bukan hanya yang tampil: panel yang tidak dibaca akan memenuhi
-    /// antrean output dan menghentikan prosesnya.
+    /// Every pane is processed, not just visible ones: an unread pane would fill its
+    /// output queue and stall its process.
     fn pump_all(&mut self) -> Option<Duration> {
         self.panes
             .values_mut()
@@ -172,6 +189,7 @@ impl CterminApp {
             return;
         };
         if self.dialog.is_none()
+            && self.ai_bar.is_none()
             && self.pane_exited(pane)
             && ctx.input(|input| input.key_pressed(Key::Enter))
         {
@@ -206,12 +224,12 @@ impl CterminApp {
     fn connect_folder(&mut self, ctx: &egui::Context, folder: FolderId) {
         let servers: Vec<ServerId> = self
             .repository
-            .store
+            .data
             .servers_in(Some(folder))
             .map(|server| server.id)
             .collect();
         if servers.is_empty() {
-            self.notice = Some("Folder ini belum berisi server.".to_owned());
+            self.notice = Some("This folder has no servers yet.".to_owned());
             return;
         }
         for (pane, server) in self.tabs.open_group(servers.len()).into_iter().zip(servers) {
@@ -245,6 +263,7 @@ impl CterminApp {
                 Shortcut::Split(axis) => self.split_focused_pane(ctx, axis),
                 Shortcut::Focus(direction) => self.tabs.focus_direction(direction),
                 Shortcut::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+                Shortcut::AiBar => self.open_ai_bar(),
             }
         }
     }
@@ -278,7 +297,7 @@ impl CterminApp {
     }
 
     fn apply_sidebar_action(&mut self, ctx: &egui::Context, action: SidebarAction) {
-        let store = &self.repository.store;
+        let store = &self.repository.data;
         match action {
             SidebarAction::Connect(id) => self.open_tab(ctx, PaneSource::Server(id)),
             SidebarAction::Reconnect(id) => self.reconnect_server(ctx, id),
@@ -294,7 +313,7 @@ impl CterminApp {
             }
             SidebarAction::DeleteServer(id) => {
                 if let Some(server) = store.server(id) {
-                    let message = format!("Hapus server \"{}\"?", server.name);
+                    let message = format!("Delete server \"{}\"?", server.name);
                     self.dialog = Some(Dialog::DeleteServer(id, message));
                 }
             }
@@ -309,7 +328,7 @@ impl CterminApp {
             SidebarAction::DeleteFolder(id) => {
                 if let Some(folder) = store.folder(id) {
                     let message = format!(
-                        "Hapus folder \"{}\"? Server di dalamnya tetap ada.",
+                        "Delete folder \"{}\"? The servers inside are kept.",
                         folder.name
                     );
                     self.dialog = Some(Dialog::DeleteFolder(id, message));
@@ -321,17 +340,17 @@ impl CterminApp {
 
     fn import_ssh_config(&mut self) {
         let Some(path) = ssh_config_path() else {
-            self.notice = Some("Folder user tidak ditemukan.".to_owned());
+            self.notice = Some("User folder not found.".to_owned());
             return;
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
-            self.notice = Some(format!("{} tidak bisa dibaca.", path.display()));
+            self.notice = Some(format!("Could not read {}.", path.display()));
             return;
         };
         let hosts = import::parse_config(&text);
-        let summary = import::merge_hosts(&mut self.repository.store, hosts);
+        let summary = import::merge_hosts(&mut self.repository.data, hosts);
         self.notice = Some(format!(
-            "{} server diimpor, {} sudah ada.",
+            "{} servers imported, {} already present.",
             summary.added, summary.skipped
         ));
         self.persist();
@@ -346,7 +365,7 @@ impl CterminApp {
     fn save_server_form(&mut self, form: &ServerForm) -> Result<(), String> {
         let id = form
             .editing
-            .unwrap_or_else(|| self.repository.store.new_server_id());
+            .unwrap_or_else(|| self.repository.data.new_server_id());
         let validated = form.validate(id)?;
         match (&validated.server.auth, &validated.new_password) {
             (AuthMethod::Password, Some(password)) => {
@@ -357,7 +376,7 @@ impl CterminApp {
                 credentials::delete_password(id).map_err(|err| format!("{err:#}"))?;
             }
         }
-        self.repository.store.upsert_server(validated.server);
+        self.repository.data.upsert_server(validated.server);
         self.persist();
         Ok(())
     }
@@ -365,9 +384,9 @@ impl CterminApp {
     fn save_folder_form(&mut self, form: &FolderForm) -> Result<(), String> {
         let name = form.validated_name()?;
         match form.editing {
-            Some(id) => self.repository.store.rename_folder(id, name),
+            Some(id) => self.repository.data.rename_folder(id, name),
             None => {
-                self.repository.store.add_folder(name);
+                self.repository.data.add_folder(name);
             }
         }
         self.persist();
@@ -378,7 +397,7 @@ impl CterminApp {
         if let Err(err) = credentials::delete_password(id) {
             self.notice = Some(format!("{err:#}"));
         }
-        self.repository.store.remove_server(id);
+        self.repository.data.remove_server(id);
         self.persist();
     }
 
@@ -388,7 +407,7 @@ impl CterminApp {
         };
         self.dialog = match dialog {
             Dialog::Server(mut form) => {
-                let folders = &self.repository.store.folders;
+                let folders = &self.repository.data.folders;
                 match dialogs::show_server_form(ctx, id, &mut form, folders) {
                     DialogResult::Open => Some(Dialog::Server(form)),
                     DialogResult::Cancelled => None,
@@ -422,18 +441,234 @@ impl CterminApp {
                     }
                 }
             }
+            Dialog::AiSettings(mut form) => match dialogs::show_ai_settings(ctx, id, &mut form) {
+                DialogResult::Open => Some(Dialog::AiSettings(form)),
+                DialogResult::Cancelled => None,
+                DialogResult::Confirmed => match self.save_ai_settings(&form) {
+                    Ok(()) => None,
+                    Err(error) => {
+                        form.error = Some(error);
+                        Some(Dialog::AiSettings(form))
+                    }
+                },
+            },
             Dialog::DeleteFolder(folder, message) => {
                 match dialogs::show_confirmation(ctx, id, &message) {
                     DialogResult::Open => Some(Dialog::DeleteFolder(folder, message)),
                     DialogResult::Cancelled => None,
                     DialogResult::Confirmed => {
-                        self.repository.store.remove_folder(folder);
+                        self.repository.data.remove_folder(folder);
                         self.persist();
                         None
                     }
                 }
             }
         };
+    }
+
+    fn open_ai_bar(&mut self) {
+        if let Some(pane) = self.tabs.active() {
+            self.ai_bar = Some(AiBar::new(pane));
+        }
+    }
+
+    fn close_ai_bar(&mut self) {
+        self.ai.cancel();
+        self.ai_bar = None;
+    }
+
+    fn provider_label(&self) -> &'static str {
+        match self.config.data.ai.provider {
+            ProviderKind::ClaudeCode => "Claude Code",
+            ProviderKind::ApiKey => "API key",
+        }
+    }
+
+    fn pane_label(&self, pane: PaneId) -> String {
+        match self.panes.get(&pane) {
+            Some(Pane {
+                session: Ok(session),
+                ..
+            }) => session.title().to_owned(),
+            _ => "this pane".to_owned(),
+        }
+    }
+
+    /// Context for the AI. Only the server name is sent, not its address.
+    fn pane_context(&self, pane: PaneId) -> Option<PaneContext> {
+        let pane = self.panes.get(&pane)?;
+        let session = pane.session.as_ref().ok()?;
+        let environment = match pane.source {
+            PaneSource::Shell => "PowerShell on Windows".to_owned(),
+            PaneSource::Server(_) => format!(
+                "SSH session to server \"{}\". Judge the server's OS from the prompt line; it is \
+                 usually Linux. This is not the local Windows machine.",
+                session.title()
+            ),
+        };
+        Some(PaneContext {
+            environment,
+            prompt_line: session.prompt_line(),
+        })
+    }
+
+    fn submit_ai(&mut self, ctx: &egui::Context, prompt: AiPrompt, kind: RequestKind) {
+        let settings = self.config.data.ai.clone();
+        let api_key = match settings.provider {
+            ProviderKind::ClaudeCode => Ok(None),
+            ProviderKind::ApiKey => credentials::load_api_key().map_err(|err| format!("{err:#}")),
+        };
+        let repaint = ctx.clone();
+        let notify = Arc::new(move || repaint.request_repaint());
+        let submitted =
+            api_key.and_then(|api_key| self.ai.submit(prompt, settings, api_key, notify));
+        if let Some(bar) = &mut self.ai_bar {
+            match submitted {
+                Ok(id) => {
+                    bar.request_id = Some(id);
+                    bar.phase = AiPhase::Waiting(kind);
+                }
+                Err(message) => bar.phase = AiPhase::Failed(message),
+            }
+        }
+    }
+
+    fn apply_ai_bar_action(&mut self, ctx: &egui::Context, action: AiBarAction) {
+        let Some(target) = self.ai_bar.as_ref().map(|bar| bar.target) else {
+            return;
+        };
+        let context = self.pane_context(target);
+        let Some(bar) = &mut self.ai_bar else {
+            return;
+        };
+        let session = self
+            .panes
+            .get(&target)
+            .and_then(|pane| pane.session.as_ref().ok());
+        match action {
+            AiBarAction::Close => self.close_ai_bar(),
+            AiBarAction::Back => bar.phase = AiPhase::Input,
+            AiBarAction::OpenSettings => {
+                self.close_ai_bar();
+                let form = AiSettingsForm::new(&self.config.data.ai, credentials::has_api_key());
+                self.dialog = Some(Dialog::AiSettings(form));
+            }
+            AiBarAction::PreviewOutput => {
+                let output = session
+                    .map(|session| session.recent_output(EXPLAIN_LINES))
+                    .unwrap_or_default();
+                bar.phase = if output.is_empty() {
+                    AiPhase::Failed("There is no output to explain yet.".to_owned())
+                } else {
+                    AiPhase::Preview(output)
+                };
+            }
+            AiBarAction::Suggest => {
+                let request = bar.input.trim().to_owned();
+                match context {
+                    Some(context) => self.submit_ai(
+                        ctx,
+                        suggest_prompt(&request, &context),
+                        RequestKind::Suggest,
+                    ),
+                    None => bar.phase = AiPhase::Failed(TARGET_CLOSED.to_owned()),
+                }
+            }
+            AiBarAction::SendOutput => {
+                let AiPhase::Preview(output) = &bar.phase else {
+                    return;
+                };
+                match context {
+                    Some(context) => {
+                        let prompt = explain_prompt(output, &context);
+                        self.submit_ai(ctx, prompt, RequestKind::Explain);
+                    }
+                    None => bar.phase = AiPhase::Failed(TARGET_CLOSED.to_owned()),
+                }
+            }
+            AiBarAction::InsertConfirmed => {
+                if let AiPhase::Confirm { command, .. } = &bar.phase {
+                    let command = command.clone();
+                    self.insert_ai_command(target, &command);
+                }
+            }
+        }
+    }
+
+    fn insert_ai_command(&mut self, target: PaneId, command: &str) {
+        let session = self
+            .panes
+            .get_mut(&target)
+            .and_then(|pane| pane.session.as_mut().ok());
+        match session {
+            Some(session) if !session.exited() => {
+                session.insert_command(command);
+                self.ai_bar = None;
+            }
+            _ => {
+                if let Some(bar) = &mut self.ai_bar {
+                    bar.phase = AiPhase::Failed(TARGET_CLOSED.to_owned());
+                }
+            }
+        }
+    }
+
+    fn poll_ai(&mut self) {
+        while let Some((id, result)) = self.ai.try_result() {
+            self.apply_ai_result(id, result);
+        }
+    }
+
+    /// Only the answer to the latest request is used.
+    fn apply_ai_result(&mut self, id: u64, result: AiResult) {
+        let Some(bar) = &mut self.ai_bar else {
+            return;
+        };
+        let AiPhase::Waiting(kind) = bar.phase else {
+            return;
+        };
+        if bar.request_id != Some(id) {
+            return;
+        }
+        let target = bar.target;
+        match (kind, result) {
+            (_, Err(message)) => bar.phase = AiPhase::Failed(message),
+            (RequestKind::Explain, Ok(text)) => bar.phase = AiPhase::Explanation(text),
+            (RequestKind::Suggest, Ok(text)) => match clean_suggestion(&text) {
+                Err(message) => bar.phase = AiPhase::Failed(message),
+                Ok(command) => match danger_reason(&command) {
+                    Some(reason) => bar.phase = AiPhase::Confirm { command, reason },
+                    None => self.insert_ai_command(target, &command),
+                },
+            },
+        }
+    }
+
+    fn show_ai_bar(&mut self, ctx: &egui::Context, id: Id) {
+        let Some(target) = self.ai_bar.as_ref().map(|bar| bar.target) else {
+            return;
+        };
+        let provider = self.provider_label();
+        let label = self.pane_label(target);
+        let action = self
+            .ai_bar
+            .as_mut()
+            .and_then(|bar| bar.show(ctx, id, provider, &label));
+        if let Some(action) = action {
+            self.apply_ai_bar_action(ctx, action);
+        }
+    }
+
+    fn save_ai_settings(&mut self, form: &AiSettingsForm) -> Result<(), String> {
+        form.validate()?;
+        let key = form.api_key.trim();
+        if !key.is_empty() {
+            credentials::save_api_key(key).map_err(|err| format!("{err:#}"))?;
+        } else if form.delete_key {
+            credentials::delete_api_key().map_err(|err| format!("{err:#}"))?;
+        }
+        self.config.data.ai = form.settings();
+        self.config.save().map_err(|err| format!("{err:#}"))
     }
 
     fn tab_titles(&self) -> Vec<String> {
@@ -458,9 +693,9 @@ impl CterminApp {
             .collect()
     }
 
-    /// Daftar server untuk menu tab baru: per folder, lalu yang tanpa folder.
+    /// The server list for the new tab menu: by folder, then those without one.
     fn server_groups(&self) -> Vec<ServerGroup> {
-        let store = &self.repository.store;
+        let store = &self.repository.data;
         let names = |folder| {
             store
                 .servers_in(folder)
@@ -498,8 +733,8 @@ impl CterminApp {
 
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let dialog_open = self.dialog.is_some();
-        if !dialog_open {
+        let overlay_open = self.dialog.is_some() || self.ai_bar.is_some();
+        if !overlay_open {
             self.apply_shortcuts(&ctx);
         }
 
@@ -512,7 +747,7 @@ impl CterminApp {
             main.set_left(right);
 
             let statuses = self.server_statuses();
-            let store = &self.repository.store;
+            let store = &self.repository.data;
             let notice = self.notice.as_deref();
             let sidebar = &mut self.sidebar;
             let action = ui
@@ -545,12 +780,13 @@ impl CterminApp {
             return;
         }
 
-        self.show_panes(ui, content, !dialog_open);
+        self.show_panes(ui, content, !overlay_open);
         self.sync_window_title(&ctx);
         self.show_dialog(&ctx, ui.scope_id().with("dialog"));
+        self.show_ai_bar(&ctx, ui.scope_id().with("ai_bar"));
     }
 
-    /// `keyboard_enabled` mati saat dialog terbuka, supaya ketikan masuk ke form.
+    /// `keyboard_enabled` is off while a dialog is open, so typing goes to the form.
     fn show_panes(&mut self, ui: &mut egui::Ui, content: Rect, keyboard_enabled: bool) {
         let Some(layout) = self.tabs.active_layout() else {
             return;
@@ -586,7 +822,7 @@ impl CterminApp {
             }
         }
 
-        // Penanda fokus hanya berguna jika ada lebih dari satu panel.
+        // The focus marker is only useful with more than one pane.
         if arranged.len() > 1 {
             let focused_rect = arranged.iter().find(|(pane, _)| Some(*pane) == focused);
             if let Some((_, rect)) = focused_rect {
@@ -600,8 +836,8 @@ impl CterminApp {
     }
 }
 
-/// Program askpass hanya dipasang jika ada password tersimpan. Tanpa itu, ssh.exe bertanya di
-/// terminal seperti biasa.
+/// The askpass program is set only if a password is saved. Otherwise ssh.exe asks in the
+/// terminal as usual.
 fn askpass_program(server: &Server) -> Option<OsString> {
     let uses_password = server.auth == AuthMethod::Password;
     if uses_password && credentials::has_password(server.id) {
@@ -617,12 +853,13 @@ fn ssh_config_path() -> Option<PathBuf> {
 }
 
 impl eframe::App for CterminApp {
-    // Output diproses di sini, bukan di `ui`, karena `ui` tidak dipanggil saat jendela
-    // diminimalkan.
+    // Output is processed here, not in `ui`, because `ui` is not called while the window
+    // is minimized.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(delay) = self.pump_all() {
             ctx.request_repaint_after(delay);
         }
+        self.poll_ai();
         self.restart_active_if_requested(ctx);
     }
 
@@ -643,6 +880,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::ai::settings::AiSettings;
     use crate::ui::tab_bar::test_positions;
 
     const WIDTH: f32 = 800.0;
@@ -653,7 +891,7 @@ mod tests {
         CommandBuilder::new("cmd.exe")
     }
 
-    /// Menjalankan aplikasi tanpa jendela, dengan urutan yang sama seperti eframe.
+    /// Runs the app without a window, in the same order as eframe.
     struct Harness {
         ctx: egui::Context,
         app: CterminApp,
@@ -664,7 +902,12 @@ mod tests {
     impl Harness {
         fn new() -> Self {
             let ctx = egui::Context::default();
-            let mut app = CterminApp::with_parts(&ctx, cmd_shell, ServerRepository::default());
+            let mut app = CterminApp::with_parts(
+                &ctx,
+                cmd_shell,
+                ServerRepository::default(),
+                ConfigFile::default(),
+            );
             app.sidebar_visible = false;
             let mut harness = Self {
                 ctx,
@@ -753,7 +996,7 @@ mod tests {
         fn wait_until(&mut self, done: impl Fn(&CterminApp) -> bool) {
             let start = Instant::now();
             while !done(&self.app) {
-                assert!(start.elapsed() < TIMEOUT, "waktu habis");
+                assert!(start.elapsed() < TIMEOUT, "timed out");
                 self.frame(Vec::new());
                 thread::sleep(Duration::from_millis(10));
             }
@@ -782,7 +1025,7 @@ mod tests {
             .active()
             .and_then(|pane| app.panes.get(&pane))
             .and_then(|pane| pane.session.as_ref().ok())
-            .expect("tab aktif harus punya sesi")
+            .expect("the active tab must have a session")
     }
 
     fn screen(app: &CterminApp) -> String {
@@ -792,13 +1035,13 @@ mod tests {
     fn wait_threads_stopped(tokens: &[Weak<()>]) {
         let start = Instant::now();
         while tokens.iter().any(|token| token.upgrade().is_some()) {
-            assert!(start.elapsed() < TIMEOUT, "thread PTY masih hidup");
+            assert!(start.elapsed() < TIMEOUT, "PTY threads are still alive");
             thread::sleep(Duration::from_millis(10));
         }
     }
 
     #[test]
-    fn ctrl_t_membuka_dan_ctrl_w_menutup() {
+    fn ctrl_t_opens_and_ctrl_w_closes() {
         let mut harness = Harness::new();
         assert_eq!(harness.count(), 1);
 
@@ -813,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_tab_berpindah_dan_berputar() {
+    fn ctrl_tab_moves_and_wraps() {
         let mut harness = Harness::new();
         harness.press(Key::T, Modifiers::CTRL);
         harness.press(Key::T, Modifiers::CTRL);
@@ -825,27 +1068,27 @@ mod tests {
     }
 
     #[test]
-    fn tiap_tab_punya_sesi_sendiri() {
+    fn each_tab_has_its_own_session() {
         let mut harness = Harness::new();
-        harness.type_line("echo isi-tab-satu");
-        harness.wait_until(|app| screen(app).matches("isi-tab-satu").count() >= 2);
+        harness.type_line("echo first-tab-content");
+        harness.wait_until(|app| screen(app).matches("first-tab-content").count() >= 2);
 
         harness.press(Key::T, Modifiers::CTRL);
         harness.wait_until(|app| screen(app).contains('>'));
         assert!(!harness
             .active_session()
             .screen_text()
-            .contains("isi-tab-satu"));
+            .contains("first-tab-content"));
 
         harness.press(Key::Tab, Modifiers::CTRL);
         assert!(harness
             .active_session()
             .screen_text()
-            .contains("isi-tab-satu"));
+            .contains("first-tab-content"));
     }
 
     #[test]
-    fn tab_latar_tetap_berjalan() {
+    fn background_tabs_keep_running() {
         let mut harness = Harness::new();
         harness.type_line("ping -t 127.0.0.1");
         harness.wait_until(|app| screen(app).contains("127.0.0.1:"));
@@ -864,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn enam_tab_berhenti_bersih_saat_ditutup() {
+    fn six_tabs_stop_cleanly_when_closed() {
         let mut harness = Harness::new();
         for _ in 0..5 {
             harness.press(Key::T, Modifiers::CTRL);
@@ -883,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn menutup_tab_terakhir_menutup_jendela() {
+    fn closing_the_last_tab_closes_the_window() {
         let mut harness = Harness::new();
         let output = harness.press(Key::W, Modifiers::CTRL);
         let commands = &output.viewport_output[&ViewportId::ROOT].commands;
@@ -891,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn klik_bilah_tab() {
+    fn tab_bar_clicks() {
         let mut harness = Harness::new();
 
         harness.click(test_positions::new_button(WIDTH, 1));
@@ -906,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_tab_tidak_memindahkan_fokus_ke_bilah_tab() {
+    fn tab_key_does_not_move_focus_to_the_tab_bar() {
         let mut harness = Harness::new();
         harness.frame(Vec::new());
         let focused = harness.ctx.memory(|memory| memory.focused());
@@ -919,24 +1162,24 @@ mod tests {
     }
 
     #[test]
-    fn judul_tab_dan_jendela_mengikuti_sesi() {
+    fn tab_and_window_titles_follow_the_session() {
         let mut harness = Harness::new();
-        harness.type_line("title judul-tab");
-        harness.wait_until(|app| active_session(app).title().contains("judul-tab"));
+        harness.type_line("title tab-title");
+        harness.wait_until(|app| active_session(app).title().contains("tab-title"));
 
-        // Judul baru dikirim pada frame yang sama dengan saat ia terbaca, atau frame berikutnya.
+        // A new title is sent on the frame it is read, or on the next one.
         harness.frame(Vec::new());
-        assert!(harness.app.tab_titles()[0].contains("judul-tab"));
-        assert!(harness.app.window_title.contains("judul-tab"));
+        assert!(harness.app.tab_titles()[0].contains("tab-title"));
+        assert!(harness.app.window_title.contains("tab-title"));
         assert!(harness.app.window_title.ends_with(APP_NAME));
     }
 
     #[test]
-    fn enter_memulai_ulang_shell_yang_keluar() {
+    fn enter_restarts_an_exited_shell() {
         let mut harness = Harness::new();
         harness.type_line("exit 3");
         harness.wait_until(|app| active_session(app).exited());
-        assert!(harness.active_session().screen_text().contains("kode 3"));
+        assert!(harness.active_session().screen_text().contains("code 3"));
 
         let old = harness.thread_tokens();
         let pane = harness.app.tabs.active();
@@ -962,13 +1205,13 @@ mod tests {
     }
 
     fn pane_rect(app: &CterminApp, pane: PaneId) -> Rect {
-        let layout = app.tabs.active_layout().expect("ada tab aktif");
+        let layout = app.tabs.active_layout().expect("has an active tab");
         layout
             .arrange(content(), DIVIDER_THICKNESS)
             .into_iter()
             .find(|(id, _)| *id == pane)
             .map(|(_, rect)| rect)
-            .expect("panel ada di layout")
+            .expect("pane is in the layout")
     }
 
     fn session_of(app: &CterminApp, pane: PaneId) -> &TerminalSession {
@@ -977,12 +1220,12 @@ mod tests {
                 session: Ok(session),
                 ..
             }) => session,
-            _ => panic!("panel harus punya sesi"),
+            _ => panic!("pane must have a session"),
         }
     }
 
     #[test]
-    fn ctrl_shift_d_dan_e_membuat_panel_bertingkat() {
+    fn ctrl_shift_d_and_e_create_nested_panes() {
         let mut harness = Harness::new();
         harness.press(Key::D, ctrl_shift());
         harness.press(Key::E, ctrl_shift());
@@ -990,49 +1233,49 @@ mod tests {
 
         assert_eq!(pane_count(&harness.app), 4);
         assert_eq!(harness.app.panes.len(), 4);
-        assert_eq!(harness.count(), 1, "tetap satu tab");
+        assert_eq!(harness.count(), 1, "still one tab");
     }
 
     #[test]
-    fn ukuran_grid_mengikuti_panel() {
+    fn grid_size_follows_the_pane() {
         let mut harness = Harness::new();
-        let left = harness.app.tabs.active().expect("ada panel");
+        let left = harness.app.tabs.active().expect("has a pane");
         let full = harness.active_session().term().columns();
 
         harness.press(Key::D, ctrl_shift());
         harness.frame(Vec::new());
-        let right = harness.app.tabs.active().expect("ada panel");
+        let right = harness.app.tabs.active().expect("has a pane");
 
         let left_columns = session_of(&harness.app, left).term().columns();
         let right_columns = session_of(&harness.app, right).term().columns();
-        assert!(left_columns < full * 6 / 10, "{left_columns} dari {full}");
-        assert!(right_columns < full * 6 / 10, "{right_columns} dari {full}");
+        assert!(left_columns < full * 6 / 10, "{left_columns} of {full}");
+        assert!(right_columns < full * 6 / 10, "{right_columns} of {full}");
     }
 
     #[test]
-    fn keyboard_hanya_masuk_ke_panel_fokus() {
+    fn keyboard_only_reaches_the_focused_pane() {
         let mut harness = Harness::new();
-        let left = harness.app.tabs.active().expect("ada panel");
+        let left = harness.app.tabs.active().expect("has a pane");
         harness.press(Key::D, ctrl_shift());
-        let right = harness.app.tabs.active().expect("ada panel");
+        let right = harness.app.tabs.active().expect("has a pane");
 
-        harness.type_line("echo hanya-kanan");
+        harness.type_line("echo right-only");
         harness.wait_until(move |app| {
             session_of(app, right)
                 .screen_text()
-                .matches("hanya-kanan")
+                .matches("right-only")
                 .count()
                 >= 2
         });
         assert!(!session_of(&harness.app, left)
             .screen_text()
-            .contains("hanya-kanan"));
+            .contains("right-only"));
     }
 
     #[test]
-    fn klik_memindahkan_fokus() {
+    fn click_moves_focus() {
         let mut harness = Harness::new();
-        let left = harness.app.tabs.active().expect("ada panel");
+        let left = harness.app.tabs.active().expect("has a pane");
         harness.press(Key::D, ctrl_shift());
         harness.frame(Vec::new());
 
@@ -1040,18 +1283,18 @@ mod tests {
         harness.click(target);
         assert_eq!(harness.app.tabs.active(), Some(left));
 
-        harness.type_line("echo ke-kiri");
+        harness.type_line("echo to-left");
         harness.wait_until(move |app| {
             session_of(app, left)
                 .screen_text()
-                .matches("ke-kiri")
+                .matches("to-left")
                 .count()
                 >= 2
         });
     }
 
     #[test]
-    fn alt_panah_memindahkan_fokus() {
+    fn alt_arrow_moves_focus() {
         let mut harness = Harness::new();
         let left = harness.app.tabs.active();
         harness.press(Key::D, ctrl_shift());
@@ -1064,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_w_menutup_panel_bukan_tab() {
+    fn ctrl_w_closes_the_pane_not_the_tab() {
         let mut harness = Harness::new();
         let left = harness.app.tabs.active();
         harness.press(Key::D, ctrl_shift());
@@ -1078,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_yang_tersisa_mengambil_kembali_ruangnya() {
+    fn remaining_pane_reclaims_its_space() {
         let mut harness = Harness::new();
         let full = harness.active_session().term().columns();
         harness.press(Key::D, ctrl_shift());
@@ -1089,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn menutup_tab_berisi_split_menghentikan_semua_sesi() {
+    fn closing_a_split_tab_stops_all_sessions() {
         let mut harness = Harness::new();
         let keep = harness.thread_tokens();
         harness.press(Key::T, Modifiers::CTRL);
@@ -1108,13 +1351,13 @@ mod tests {
             .collect();
         assert_eq!(closed.len(), 4);
         wait_threads_stopped(&closed);
-        assert!(keep[0].upgrade().is_some(), "tab lain tetap hidup");
+        assert!(keep[0].upgrade().is_some(), "other tabs stay alive");
     }
 
     #[test]
-    fn drag_pembatas_mengubah_ukuran_panel() {
+    fn dragging_a_divider_resizes_panes() {
         let mut harness = Harness::new();
-        let left = harness.app.tabs.active().expect("ada panel");
+        let left = harness.app.tabs.active().expect("has a pane");
         harness.press(Key::D, ctrl_shift());
         harness.frame(Vec::new());
         let before = session_of(&harness.app, left).term().columns();
@@ -1124,18 +1367,18 @@ mod tests {
         harness.frame(Vec::new());
 
         let after = session_of(&harness.app, left).term().columns();
-        assert!(after + 10 < before, "kolom {before} menjadi {after}");
+        assert!(after + 10 < before, "columns went from {before} to {after}");
     }
 
     #[test]
-    fn roda_mouse_mengikuti_pointer_bukan_fokus() {
+    fn mouse_wheel_follows_the_pointer_not_focus() {
         let mut harness = Harness::new();
-        harness.type_line("for /L %i in (1,1,100) do @echo baris-%i");
-        harness.wait_until(|app| screen(app).contains("baris-100"));
-        let left = harness.app.tabs.active().expect("ada panel");
+        harness.type_line("for /L %i in (1,1,100) do @echo line-%i");
+        harness.wait_until(|app| screen(app).contains("line-100"));
+        let left = harness.app.tabs.active().expect("has a pane");
         harness.press(Key::D, ctrl_shift());
         harness.frame(Vec::new());
-        let right = harness.app.tabs.active().expect("ada panel");
+        let right = harness.app.tabs.active().expect("has a pane");
 
         let target = pane_rect(&harness.app, left).center();
         harness.frame(vec![Event::PointerMoved(target)]);
@@ -1159,9 +1402,9 @@ mod tests {
     }
 
     #[test]
-    fn enter_hanya_memulai_ulang_panel_fokus_yang_keluar() {
+    fn enter_only_restarts_the_focused_exited_pane() {
         let mut harness = Harness::new();
-        let left = harness.app.tabs.active().expect("ada panel");
+        let left = harness.app.tabs.active().expect("has a pane");
         harness.press(Key::D, ctrl_shift());
         harness.type_line("exit 0");
         harness.wait_until(|app| active_session(app).exited());
@@ -1173,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn jendela_sangat_kecil_tidak_panik() {
+    fn tiny_window_does_not_panic() {
         let mut harness = Harness::new();
         for _ in 0..4 {
             harness.press(Key::D, ctrl_shift());
@@ -1185,16 +1428,16 @@ mod tests {
         assert_eq!(pane_count(&harness.app), 9);
     }
 
-    /// Server di port yang pasti menolak koneksi: ssh.exe asli berjalan dan langsung gagal.
+    /// A server on a port that refuses connections: real ssh.exe runs and fails at once.
     fn add_refused_server(harness: &mut Harness, name: &str, folder: Option<FolderId>) -> ServerId {
-        let store = &mut harness.app.repository.store;
+        let store = &mut harness.app.repository.data;
         let id = store.new_server_id();
         store.upsert_server(Server {
             id,
             name: name.to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 1,
-            username: "uji".to_owned(),
+            username: "tester".to_owned(),
             folder,
             auth: AuthMethod::Key {
                 identity_file: None,
@@ -1210,23 +1453,23 @@ mod tests {
     }
 
     #[test]
-    fn klik_server_membuka_tab_ssh_dengan_nama_server() {
+    fn clicking_a_server_opens_a_tab_named_after_it() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
 
         sidebar_action(&mut harness, SidebarAction::Connect(id));
 
         assert_eq!(harness.count(), 2);
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.active_session().title(), "test-server");
         harness.wait_until(|app| active_session(app).exited());
-        assert!(screen(&harness.app).contains("Koneksi terputus"));
-        assert!(screen(&harness.app).contains("kode 255"));
+        assert!(screen(&harness.app).contains("Disconnected"));
+        assert!(screen(&harness.app).contains("code 255"));
     }
 
     #[test]
-    fn status_server_mengikuti_panel() {
+    fn server_status_follows_panes() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
         assert_eq!(harness.app.server_statuses().get(&id), None);
 
         sidebar_action(&mut harness, SidebarAction::Connect(id));
@@ -1241,26 +1484,26 @@ mod tests {
     }
 
     #[test]
-    fn enter_menyambung_ulang_server_yang_terputus() {
+    fn enter_reconnects_a_disconnected_server() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
         sidebar_action(&mut harness, SidebarAction::Connect(id));
         harness.wait_until(|app| active_session(app).exited());
 
         harness.press(Key::Enter, Modifiers::NONE);
 
         assert!(!harness.active_session().exited());
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.active_session().title(), "test-server");
     }
 
     #[test]
-    fn klik_folder_membuka_semua_server_dalam_split() {
+    fn clicking_a_folder_opens_all_servers_in_splits() {
         let mut harness = Harness::new();
-        let folder = harness.app.repository.store.add_folder("cj".to_owned());
-        add_refused_server(&mut harness, "satu", Some(folder));
-        add_refused_server(&mut harness, "dua", Some(folder));
-        add_refused_server(&mut harness, "tiga", Some(folder));
-        add_refused_server(&mut harness, "di-luar-folder", None);
+        let folder = harness.app.repository.data.add_folder("cj".to_owned());
+        add_refused_server(&mut harness, "one", Some(folder));
+        add_refused_server(&mut harness, "two", Some(folder));
+        add_refused_server(&mut harness, "three", Some(folder));
+        add_refused_server(&mut harness, "outside-folder", None);
 
         sidebar_action(&mut harness, SidebarAction::ConnectFolder(folder));
 
@@ -1270,9 +1513,9 @@ mod tests {
     }
 
     #[test]
-    fn folder_kosong_memberi_pesan() {
+    fn empty_folder_shows_a_message() {
         let mut harness = Harness::new();
-        let folder = harness.app.repository.store.add_folder("kosong".to_owned());
+        let folder = harness.app.repository.data.add_folder("empty".to_owned());
         sidebar_action(&mut harness, SidebarAction::ConnectFolder(folder));
 
         assert_eq!(harness.count(), 1);
@@ -1280,24 +1523,24 @@ mod tests {
     }
 
     #[test]
-    fn split_dan_duplikat_tab_ssh_memakai_server_yang_sama() {
+    fn split_and_duplicate_of_ssh_tab_use_the_same_server() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
         sidebar_action(&mut harness, SidebarAction::Connect(id));
 
         harness.press(Key::D, ctrl_shift());
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.active_session().title(), "test-server");
 
         let ctx = harness.ctx.clone();
         harness.app.apply_tab_action(&ctx, TabAction::Duplicate(1));
         assert_eq!(harness.count(), 3);
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.active_session().title(), "test-server");
     }
 
     #[test]
-    fn ctrl_t_dari_tab_ssh_tetap_membuka_shell() {
+    fn ctrl_t_from_an_ssh_tab_still_opens_a_shell() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
         sidebar_action(&mut harness, SidebarAction::Connect(id));
 
         harness.press(Key::T, Modifiers::CTRL);
@@ -1305,16 +1548,16 @@ mod tests {
     }
 
     #[test]
-    fn server_yang_dihapus_tidak_bisa_disambung_ulang() {
+    fn deleted_server_cannot_reconnect() {
         let mut harness = Harness::new();
-        let id = add_refused_server(&mut harness, "server-uji", None);
+        let id = add_refused_server(&mut harness, "test-server", None);
         sidebar_action(&mut harness, SidebarAction::Connect(id));
         harness.wait_until(|app| active_session(app).exited());
 
         harness.app.delete_server(id);
         harness.press(Key::Enter, Modifiers::NONE);
 
-        let pane = harness.app.tabs.active().expect("ada panel");
+        let pane = harness.app.tabs.active().expect("has a pane");
         assert!(matches!(
             harness.app.panes.get(&pane),
             Some(Pane {
@@ -1325,7 +1568,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_menahan_keyboard_dan_shortcut_dari_terminal() {
+    fn dialog_keeps_keyboard_and_shortcuts_from_the_terminal() {
         let mut harness = Harness::new();
         sidebar_action(&mut harness, SidebarAction::AddFolder);
 
@@ -1333,17 +1576,17 @@ mod tests {
         assert_eq!(
             harness.count(),
             1,
-            "Ctrl+T tidak membuka tab saat dialog terbuka"
+            "Ctrl+T must not open a tab while a dialog is open"
         );
 
-        harness.frame(vec![Event::Paste("echo bocor-ke-terminal\n".to_owned())]);
+        harness.frame(vec![Event::Paste("echo leaked-to-terminal\n".to_owned())]);
         thread::sleep(Duration::from_millis(200));
         harness.frame(Vec::new());
-        assert!(!screen(&harness.app).contains("bocor-ke-terminal"));
+        assert!(!screen(&harness.app).contains("leaked-to-terminal"));
     }
 
     #[test]
-    fn enter_di_dialog_tidak_memulai_ulang_panel() {
+    fn enter_in_a_dialog_does_not_restart_the_pane() {
         let mut harness = Harness::new();
         harness.type_line("exit 0");
         harness.wait_until(|app| active_session(app).exited());
@@ -1354,37 +1597,37 @@ mod tests {
     }
 
     #[test]
-    fn menyimpan_form_server_masuk_ke_data() {
+    fn saving_the_server_form_updates_the_data() {
         let mut harness = Harness::new();
         let mut form = ServerForm::new(None);
         assert!(harness.app.save_server_form(&form).is_err());
-        assert!(harness.app.repository.store.servers.is_empty());
+        assert!(harness.app.repository.data.servers.is_empty());
 
-        form = ServerForm::filled("baru", "10.0.0.9");
+        form = ServerForm::filled("new", "10.0.0.9");
         harness.app.save_server_form(&form).expect("tersimpan");
-        assert_eq!(harness.app.repository.store.servers.len(), 1);
+        assert_eq!(harness.app.repository.data.servers.len(), 1);
     }
 
     #[test]
-    fn klik_baris_server_di_sidebar_membuka_tab() {
+    fn clicking_a_sidebar_server_opens_a_tab() {
         let mut harness = Harness::new();
-        add_refused_server(&mut harness, "server-uji", None);
+        add_refused_server(&mut harness, "test-server", None);
         harness.app.sidebar_visible = true;
         harness.frame(Vec::new());
 
-        // Baris server ada di bawah judul dan tombol; posisinya dicari dari atas ke bawah.
+        // The server row sits below the header and buttons; search for it from the top down.
         let mut y = 40.0;
         while harness.count() == 1 && y < 300.0 {
             harness.click(pos2(60.0, y));
             y += 6.0;
         }
 
-        assert_eq!(harness.count(), 2, "klik pada baris server membuka tab");
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.count(), 2, "clicking a server row opens a tab");
+        assert_eq!(harness.active_session().title(), "test-server");
     }
 
     #[test]
-    fn dropdown_tab_baru_terbuka_dan_baris_pertama_powershell() {
+    fn new_tab_dropdown_opens_with_powershell_first() {
         let mut harness = Harness::new();
         let button = test_positions::dropdown(WIDTH, 1);
 
@@ -1399,14 +1642,14 @@ mod tests {
     }
 
     #[test]
-    fn klik_server_di_dropdown_membuka_tab_ssh() {
+    fn clicking_a_dropdown_server_opens_an_ssh_tab() {
         let mut harness = Harness::new();
-        add_refused_server(&mut harness, "server-uji", None);
+        add_refused_server(&mut harness, "test-server", None);
         harness.frame(Vec::new());
 
-        // Baris server ada di bawah PowerShell; posisinya dicari dari atas ke bawah.
+        // The server row sits below PowerShell; search for it from the top down.
         let mut offset = 44.0;
-        while harness.active_session().title() != "server-uji" && offset < 120.0 {
+        while harness.active_session().title() != "test-server" && offset < 120.0 {
             let button = test_positions::dropdown(WIDTH, harness.count());
             harness.click(button);
             assert!(egui::Popup::is_any_open(&harness.ctx));
@@ -1417,28 +1660,278 @@ mod tests {
             offset += 4.0;
         }
 
-        assert_eq!(harness.active_session().title(), "server-uji");
+        assert_eq!(harness.active_session().title(), "test-server");
     }
 
     #[test]
-    fn daftar_server_menu_mengikuti_folder() {
+    fn menu_server_list_follows_folders() {
         let mut harness = Harness::new();
-        let folder = harness.app.repository.store.add_folder("cj".to_owned());
-        harness.app.repository.store.add_folder("kosong".to_owned());
-        add_refused_server(&mut harness, "satu", Some(folder));
-        add_refused_server(&mut harness, "bebas", None);
+        let folder = harness.app.repository.data.add_folder("cj".to_owned());
+        harness.app.repository.data.add_folder("empty".to_owned());
+        add_refused_server(&mut harness, "one", Some(folder));
+        add_refused_server(&mut harness, "free", None);
 
         let groups = harness.app.server_groups();
 
-        assert_eq!(groups.len(), 2, "folder kosong tidak ditampilkan");
+        assert_eq!(groups.len(), 2, "empty folders are not shown");
         assert_eq!(groups[0].title.as_deref(), Some("cj"));
-        assert_eq!(groups[0].servers[0].1, "satu");
+        assert_eq!(groups[0].servers[0].1, "one");
         assert_eq!(groups[1].title, None);
-        assert_eq!(groups[1].servers[0].1, "bebas");
+        assert_eq!(groups[1].servers[0].1, "free");
+    }
+
+    fn open_bar(harness: &mut Harness) {
+        harness.press(Key::K, Modifiers::CTRL);
+        assert!(harness.app.ai_bar.is_some());
+    }
+
+    /// Simulates the AI answering the waiting request.
+    fn ai_answers(harness: &mut Harness, kind: RequestKind, answer: AiResult) {
+        const ID: u64 = 77;
+        let bar = harness.app.ai_bar.as_mut().expect("bar is open");
+        bar.phase = AiPhase::Waiting(kind);
+        bar.request_id = Some(ID);
+        harness.app.apply_ai_result(ID, answer);
+        harness.frame(Vec::new());
+    }
+
+    fn wait_prompt(harness: &mut Harness) {
+        harness.wait_until(|app| screen(app).contains('>'));
     }
 
     #[test]
-    fn sidebar_bisa_ditampilkan_dan_disembunyikan() {
+    fn ctrl_k_opens_the_bar_and_escape_closes_it() {
+        let mut harness = Harness::new();
+        open_bar(&mut harness);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.ai_bar.is_none());
+    }
+
+    #[test]
+    fn safe_suggestion_is_inserted_without_running() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+
+        ai_answers(
+            &mut harness,
+            RequestKind::Suggest,
+            Ok("echo ai-suggestion-%OS%".to_owned()),
+        );
+        assert!(harness.app.ai_bar.is_none(), "bar closes after inserting");
+
+        harness.wait_until(|app| screen(app).contains("ai-suggestion-%OS%"));
+        thread::sleep(Duration::from_millis(400));
+        harness.frame(Vec::new());
+        assert!(
+            !screen(&harness.app).contains("ai-suggestion-Windows_NT"),
+            "the command must not run before Enter"
+        );
+
+        harness.press(Key::Enter, Modifiers::NONE);
+        harness.wait_until(|app| screen(app).contains("ai-suggestion-Windows_NT"));
+    }
+
+    #[test]
+    fn dangerous_command_waits_for_confirmation() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+
+        ai_answers(
+            &mut harness,
+            RequestKind::Suggest,
+            Ok("rm -rf /var/test-marker".to_owned()),
+        );
+        thread::sleep(Duration::from_millis(300));
+        harness.frame(Vec::new());
+        assert!(
+            !screen(&harness.app).contains("test-marker"),
+            "not inserted yet"
+        );
+        let bar = harness.app.ai_bar.as_ref().expect("bar is still open");
+        assert!(matches!(bar.phase, AiPhase::Confirm { .. }));
+
+        let ctx = harness.ctx.clone();
+        harness
+            .app
+            .apply_ai_bar_action(&ctx, AiBarAction::InsertConfirmed);
+        harness.wait_until(|app| screen(app).contains("test-marker"));
+        assert!(harness.app.ai_bar.is_none());
+    }
+
+    #[test]
+    fn enter_does_not_confirm_a_dangerous_command() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+        ai_answers(&mut harness, RequestKind::Suggest, Ok("reboot".to_owned()));
+
+        harness.press(Key::Enter, Modifiers::NONE);
+        thread::sleep(Duration::from_millis(300));
+        harness.frame(Vec::new());
+
+        assert!(!screen(&harness.app).contains("reboot"));
+        assert!(harness.app.ai_bar.is_some());
+    }
+
+    #[test]
+    fn multiline_answers_do_not_reach_the_terminal() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+        ai_answers(
+            &mut harness,
+            RequestKind::Suggest,
+            Ok("echo first\necho second".to_owned()),
+        );
+
+        thread::sleep(Duration::from_millis(300));
+        harness.frame(Vec::new());
+        assert!(!screen(&harness.app).contains("first"));
+        let bar = harness.app.ai_bar.as_ref().expect("bar is still open");
+        assert!(matches!(bar.phase, AiPhase::Failed(_)));
+    }
+
+    #[test]
+    fn answer_goes_to_the_original_pane_after_focus_moves() {
+        let mut harness = Harness::new();
+        let first = harness.app.tabs.active().expect("has a pane");
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+        harness.app.tabs.open();
+        let other = harness.app.tabs.active().expect("has a pane");
+        let spawned = harness.app.spawn_pane(&harness.ctx, PaneSource::Shell);
+        harness.app.panes.insert(other, spawned);
+
+        ai_answers(
+            &mut harness,
+            RequestKind::Suggest,
+            Ok("echo to-target".to_owned()),
+        );
+
+        harness.wait_until(move |app| session_of(app, first).screen_text().contains("to-target"));
+        assert!(!session_of(&harness.app, other)
+            .screen_text()
+            .contains("to-target"));
+    }
+
+    #[test]
+    fn closed_target_pane_shows_a_message() {
+        let mut harness = Harness::new();
+        open_bar(&mut harness);
+        harness.press(Key::D, ctrl_shift());
+        let bar = harness.app.ai_bar.as_ref().expect("bar is open");
+        let target = bar.target;
+        harness.app.panes.remove(&target);
+
+        ai_answers(&mut harness, RequestKind::Suggest, Ok("df -h".to_owned()));
+
+        let bar = harness.app.ai_bar.as_ref().expect("bar is still open");
+        assert!(matches!(bar.phase, AiPhase::Failed(_)));
+    }
+
+    #[test]
+    fn stale_answers_are_ignored() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+        let bar = harness.app.ai_bar.as_mut().expect("bar is open");
+        bar.phase = AiPhase::Waiting(RequestKind::Suggest);
+        bar.request_id = Some(2);
+
+        harness
+            .app
+            .apply_ai_result(1, Ok("echo stale-answer".to_owned()));
+        harness.frame(Vec::new());
+
+        assert!(!screen(&harness.app).contains("stale-answer"));
+        let bar = harness.app.ai_bar.as_ref().expect("bar is still open");
+        assert_eq!(bar.phase, AiPhase::Waiting(RequestKind::Suggest));
+    }
+
+    #[test]
+    fn explain_shows_the_text_before_sending() {
+        let mut harness = Harness::new();
+        harness.type_line("echo test-error-message");
+        harness.wait_until(|app| screen(app).matches("test-error-message").count() >= 2);
+        open_bar(&mut harness);
+
+        let ctx = harness.ctx.clone();
+        harness
+            .app
+            .apply_ai_bar_action(&ctx, AiBarAction::PreviewOutput);
+
+        let bar = harness.app.ai_bar.as_ref().expect("bar is open");
+        let AiPhase::Preview(output) = &bar.phase else {
+            panic!("must show a preview");
+        };
+        assert!(output.contains("test-error-message"));
+        assert_eq!(bar.request_id, None, "nothing was sent yet");
+
+        ai_answers(
+            &mut harness,
+            RequestKind::Explain,
+            Ok("Penjelasan".to_owned()),
+        );
+        let bar = harness.app.ai_bar.as_ref().expect("bar is open");
+        assert_eq!(bar.phase, AiPhase::Explanation("Penjelasan".to_owned()));
+    }
+
+    #[test]
+    fn keyboard_stays_out_of_the_terminal_while_bar_is_open() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        open_bar(&mut harness);
+        harness.frame(vec![Event::Paste("echo leaked-to-terminal\n".to_owned())]);
+        thread::sleep(Duration::from_millis(200));
+        harness.frame(Vec::new());
+        assert!(!screen(&harness.app).contains("leaked-to-terminal"));
+    }
+
+    #[test]
+    fn context_holds_environment_and_prompt() {
+        let mut harness = Harness::new();
+        wait_prompt(&mut harness);
+        let pane = harness.app.tabs.active().expect("has a pane");
+        let context = harness.app.pane_context(pane).expect("has context");
+        assert!(context.environment.contains("Windows"));
+        assert!(context.prompt_line.contains('>'));
+
+        let id = add_refused_server(&mut harness, "test-server", None);
+        sidebar_action(&mut harness, SidebarAction::Connect(id));
+        let pane = harness.app.tabs.active().expect("has a pane");
+        let context = harness.app.pane_context(pane).expect("has context");
+        assert!(context.environment.contains("test-server"));
+        assert!(
+            !context.environment.contains("127.0.0.1"),
+            "the address is not sent"
+        );
+    }
+
+    #[test]
+    fn provider_settings_are_saved() {
+        let mut harness = Harness::new();
+        let mut form = AiSettingsForm::new(&AiSettings::default(), false);
+        form.provider = ProviderKind::ClaudeCode;
+        form.model = " sonnet ".to_owned();
+        harness.app.save_ai_settings(&form).expect("tersimpan");
+        assert_eq!(harness.app.config.data.ai.model, "sonnet");
+
+        form.provider = ProviderKind::ApiKey;
+        assert!(
+            harness.app.save_ai_settings(&form).is_err(),
+            "an API key is required"
+        );
+        assert_eq!(
+            harness.app.config.data.ai.provider,
+            ProviderKind::ClaudeCode,
+            "failed settings change nothing"
+        );
+    }
+
+    #[test]
+    fn sidebar_can_be_shown_and_hidden() {
         let mut harness = Harness::new();
         harness.frame(Vec::new());
         let wide = harness.active_session().term().columns();
@@ -1450,14 +1943,14 @@ mod tests {
     }
 
     #[test]
-    fn klik_kanan_tab_membuka_menu_dan_duplikat_berjalan() {
+    fn right_clicking_a_tab_opens_the_menu_and_duplicates() {
         let mut harness = Harness::new();
         let source = harness.app.tabs.active();
         let position = test_positions::tab(WIDTH, 1, 0);
         harness.right_click(position);
         assert!(egui::Popup::is_any_open(&harness.ctx));
 
-        // Baris pertama menu tepat di bawah pointer adalah "Duplikat tab".
+        // The first menu row right below the pointer is "Duplicate tab".
         harness.click(position + vec2(30.0, 14.0));
 
         assert_eq!(harness.count(), 2);
@@ -1468,7 +1961,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_split_berlaku_untuk_tab_yang_diklik() {
+    fn split_menu_applies_to_the_clicked_tab() {
         let mut harness = Harness::new();
         harness.press(Key::T, Modifiers::CTRL);
         assert_eq!(harness.app.tabs.active_index(), 1);
@@ -1484,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_tutup_split_hanya_menutup_panel_fokus() {
+    fn close_split_menu_closes_only_the_focused_pane() {
         let mut harness = Harness::new();
         harness.press(Key::D, ctrl_shift());
         harness.press(Key::T, Modifiers::CTRL);
@@ -1497,7 +1990,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_duplikat_menaruh_tab_di_samping_sumber() {
+    fn duplicate_menu_places_the_tab_next_to_its_source() {
         let mut harness = Harness::new();
         harness.press(Key::T, Modifiers::CTRL);
         let last = harness.app.tabs.active();

@@ -1,15 +1,15 @@
-//! Tabel mapping tombol ke byte yang dikirim ke PTY (mengikuti konvensi xterm).
+//! Mapping table from keys to the bytes sent to the PTY (following xterm conventions).
 
 use eframe::egui::{Key, Modifiers};
 
 const ESC: u8 = 0x1b;
 const DEL: u8 = 0x7f;
 
-/// Menerjemahkan tombol. `None` berarti tombol ini tidak mengirim apa pun, atau teksnya
-/// sudah dikirim lewat `Event::Text`.
+/// Translates a key. `None` means the key sends nothing, or its text was
+/// already sent through `Event::Text`.
 pub fn encode_key(key: Key, mods: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
-    // Di Windows, AltGr dilaporkan sebagai Ctrl+Alt. Karakter hasil AltGr tidak boleh
-    // berubah menjadi urutan kontrol.
+    // On Windows, AltGr is reported as Ctrl+Alt. Characters typed with AltGr must not
+    // turn into control sequences.
     if mods.ctrl && mods.alt {
         return None;
     }
@@ -51,8 +51,8 @@ pub fn encode_key(key: Key, mods: Modifiers, app_cursor: bool) -> Option<Vec<u8>
     Some(bytes)
 }
 
-/// Menyiapkan teks paste. Karakter ESC dibuang supaya isi clipboard tidak bisa keluar dari
-/// mode bracketed paste lalu dieksekusi.
+/// Prepares pasted text. ESC characters are removed so clipboard contents cannot escape
+/// bracketed paste mode and get executed.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let cleaned: String = text
         .replace("\r\n", "\r")
@@ -124,7 +124,7 @@ fn alt_char(key: Key, shift: bool) -> Option<u8> {
     }
 }
 
-/// Huruf kapital A-Z milik tombol huruf.
+/// The capital A-Z of a letter key.
 fn letter(key: Key) -> Option<u8> {
     match key.name().as_bytes() {
         [byte] if byte.is_ascii_uppercase() => Some(*byte),
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_huruf_menjadi_byte_kontrol() {
+    fn ctrl_letter_becomes_control_byte() {
         assert_eq!(key(Key::C, CTRL), Some(vec![0x03]));
         assert_eq!(key(Key::A, CTRL), Some(vec![0x01]));
         assert_eq!(key(Key::Z, CTRL), Some(vec![0x1a]));
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn panah_mengikuti_mode_aplikasi() {
+    fn arrows_follow_application_mode() {
         assert_eq!(key(Key::ArrowUp, NONE), Some(b"\x1b[A".to_vec()));
         assert_eq!(
             encode_key(Key::ArrowUp, NONE, true),
@@ -163,7 +163,7 @@ mod tests {
         );
         assert_eq!(key(Key::ArrowLeft, CTRL), Some(b"\x1b[1;5D".to_vec()));
         assert_eq!(key(Key::ArrowRight, SHIFT), Some(b"\x1b[1;2C".to_vec()));
-        // Dengan modifier, formatnya tetap CSI walau di mode aplikasi.
+        // With a modifier, the format stays CSI even in application mode.
         assert_eq!(
             encode_key(Key::ArrowUp, CTRL, true),
             Some(b"\x1b[1;5A".to_vec())
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_navigasi_dan_fungsi() {
+    fn navigation_and_function_keys() {
         assert_eq!(key(Key::Delete, NONE), Some(b"\x1b[3~".to_vec()));
         assert_eq!(key(Key::PageUp, NONE), Some(b"\x1b[5~".to_vec()));
         assert_eq!(key(Key::PageDown, CTRL), Some(b"\x1b[6;5~".to_vec()));
@@ -192,26 +192,26 @@ mod tests {
     }
 
     #[test]
-    fn alt_mengawali_dengan_esc() {
+    fn alt_prefixes_esc() {
         assert_eq!(key(Key::B, ALT), Some(b"\x1bb".to_vec()));
         assert_eq!(key(Key::B, ALT | SHIFT), Some(b"\x1bB".to_vec()));
         assert_eq!(key(Key::Num3, ALT), Some(b"\x1b3".to_vec()));
     }
 
     #[test]
-    fn huruf_biasa_lewat_event_text() {
+    fn plain_letters_use_the_text_event() {
         assert_eq!(key(Key::A, NONE), None);
         assert_eq!(key(Key::A, SHIFT), None);
         assert_eq!(key(Key::Space, NONE), None);
     }
 
     #[test]
-    fn altgr_tidak_menjadi_urutan_kontrol() {
+    fn altgr_does_not_become_a_control_sequence() {
         assert_eq!(key(Key::Q, CTRL | ALT), None);
     }
 
     #[test]
-    fn paste_mengubah_baris_baru_dan_membuang_esc() {
+    fn paste_converts_newlines_and_removes_esc() {
         assert_eq!(encode_paste("a\r\nb\nc", false), b"a\rb\rc".to_vec());
         assert_eq!(
             encode_paste("x\x1b[201~y", true),

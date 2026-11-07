@@ -1,11 +1,11 @@
-//! Proses shell di dalam ConPTY beserta thread pendukungnya.
+//! The shell process inside ConPTY and its supporting threads.
 //!
-//! Semua operasi yang bisa memblokir terjadi di thread terpisah supaya UI tidak pernah
-//! menunggu PTY:
-//! - `pty-reader` membaca output dan mengirimnya ke UI.
-//! - `pty-control` memegang master PTY: menulis input, resize, lalu menutup ConPTY.
-//! - `pty-waiter` menunggu proses selesai, karena ConPTY tidak mengirim EOF saat shell
-//!   keluar sampai pseudoconsole ditutup.
+//! Every blocking operation happens on a separate thread, so the UI never
+//! waits on the PTY:
+//! - `pty-reader` reads output and sends it to the UI.
+//! - `pty-control` owns the master PTY: writes input, resizes, then closes ConPTY.
+//! - `pty-waiter` waits for the process, because ConPTY sends no EOF when the shell
+//!   exits until the pseudoconsole is closed.
 
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -17,16 +17,16 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
-/// Jumlah potongan output yang boleh antre. Saat penuh, pembaca menunggu UI (backpressure).
+/// How many output chunks may queue. When full, the reader waits for the UI (backpressure).
 const OUTPUT_QUEUE_SIZE: usize = 32;
 
-/// Dipanggil dari thread latar setelah ada kejadian baru untuk UI.
+/// Called from a background thread after a new event for the UI.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
-/// Kejadian dari PTY untuk diproses di UI thread.
+/// Events from the PTY to process on the UI thread.
 pub enum PtyEvent {
     Output(Vec<u8>),
-    /// Proses selesai. `None` jika kode keluarnya tidak diketahui.
+    /// The process exited. `None` if the exit code is unknown.
     Exited(Option<u32>),
 }
 
@@ -36,7 +36,7 @@ enum Control {
     Shutdown,
 }
 
-/// Saat di-drop, proses dimatikan dan ketiga thread berhenti dengan sendirinya.
+/// When dropped, the process is killed and all three threads stop on their own.
 pub struct Pty {
     control: Sender<Control>,
     events: Receiver<PtyEvent>,
@@ -45,7 +45,7 @@ pub struct Pty {
     threads_alive: std::sync::Weak<()>,
 }
 
-/// Shell bawaan: PowerShell di folder home user.
+/// The default shell: PowerShell in the user's home folder.
 pub fn default_shell() -> CommandBuilder {
     let mut command = CommandBuilder::new("powershell.exe");
     command.arg("-NoLogo");
@@ -63,23 +63,23 @@ impl Pty {
 
         let pair = native_pty_system()
             .openpty(size)
-            .map_err(|err| anyhow!("Gagal membuat ConPTY: {err}"))?;
+            .map_err(|err| anyhow!("Could not create ConPTY: {err}"))?;
         let mut child = pair
             .slave
             .spawn_command(command)
-            .map_err(|err| anyhow!("Gagal menjalankan shell: {err}"))?;
-        // Handle slave di proses ini harus ditutup agar hanya shell yang memakainya.
+            .map_err(|err| anyhow!("Could not start the shell: {err}"))?;
+        // The slave handle in this process must close so only the shell holds it.
         drop(pair.slave);
 
         let killer = child.clone_killer();
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|err| anyhow!("Gagal membaca PTY: {err}"))?;
+            .map_err(|err| anyhow!("Could not read from the PTY: {err}"))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|err| anyhow!("Gagal menulis ke PTY: {err}"))?;
+            .map_err(|err| anyhow!("Could not write to the PTY: {err}"))?;
 
         let (control_tx, control_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::sync_channel(OUTPUT_QUEUE_SIZE);
@@ -95,7 +95,7 @@ impl Pty {
                     let _alive = alive;
                     read_loop(reader, event_tx, notify);
                 })
-                .context("Gagal membuat thread pembaca PTY")?
+                .context("Could not create the PTY reader thread")?
         };
 
         {
@@ -107,7 +107,7 @@ impl Pty {
                     let _alive = alive;
                     control_loop(control_rx, master, writer);
                 })
-                .context("Gagal membuat thread kontrol PTY")?;
+                .context("Could not create the PTY control thread")?;
         }
 
         {
@@ -119,7 +119,7 @@ impl Pty {
                     let code = child.wait().ok().map(|status| status.exit_code());
                     finish(control_tx, reader_thread, event_tx, notify, code);
                 })
-                .context("Gagal membuat thread penunggu proses")?;
+                .context("Could not create the process waiter thread")?;
         }
 
         Ok(Self {
@@ -131,13 +131,13 @@ impl Pty {
         })
     }
 
-    /// Mengambil kejadian berikutnya tanpa menunggu.
+    /// Takes the next event without waiting.
     pub fn try_next_event(&self) -> Option<PtyEvent> {
         self.events.try_recv().ok()
     }
 
     pub fn write(&self, bytes: Vec<u8>) {
-        // Gagal hanya jika thread kontrol sudah berhenti, artinya proses sudah selesai.
+        // Fails only if the control thread has stopped, meaning the process has exited.
         let _ = self.control.send(Control::Write(bytes));
     }
 
@@ -153,16 +153,16 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // Gagal jika proses sudah selesai, dan itu memang kondisi yang diinginkan.
+        // Fails if the process has already exited, which is the desired state anyway.
         let _ = self.killer.kill();
     }
 }
 
-/// Status "abaikan Ctrl+C" diwariskan dari proses induk ke anaknya. Jika ctermin dibuka oleh
-/// launcher yang punya status itu, Ctrl+C di shell akan mati tanpa pesan apa pun.
+/// The "ignore Ctrl+C" state is inherited from parent to child. If ctermin is started by a
+/// launcher with that state, Ctrl+C in the shell silently stops working.
 fn enable_ctrl_c_for_children() {
-    // SAFETY: handler NULL hanya mengubah atribut proses, tanpa pointer yang didereferensi.
-    // Hasilnya sengaja diabaikan: jika gagal, shell tetap berjalan seperti biasa.
+    // SAFETY: a NULL handler only changes a process attribute; no pointer is dereferenced.
+    // The result is ignored on purpose: on failure the shell still runs normally.
     unsafe {
         SetConsoleCtrlHandler(None, 0);
     }
@@ -206,10 +206,10 @@ fn control_loop(
             Control::Shutdown => break,
         }
     }
-    // Menutup writer dan master menutup ConPTY, sehingga pembaca mendapat EOF.
+    // Closing the writer and master closes ConPTY, so the reader gets EOF.
 }
 
-/// Menutup ConPTY, menunggu sisa output terbaca, baru mengabarkan proses selesai.
+/// Closes ConPTY, waits for the remaining output, then reports that the process exited.
 fn finish(
     control: Sender<Control>,
     reader_thread: JoinHandle<()>,

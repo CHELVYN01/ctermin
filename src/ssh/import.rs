@@ -1,7 +1,7 @@
-//! Import host dari `~/.ssh/config`.
+//! Imports hosts from `~/.ssh/config`.
 //!
-//! Host disimpan memakai alias-nya, sehingga ssh.exe tetap membaca config itu sendiri dan opsi
-//! seperti ProxyJump, HostName, atau IdentityFile tetap berlaku.
+//! Hosts are stored by alias, so ssh.exe still reads the config itself and options
+//! such as ProxyJump, HostName, or IdentityFile keep working.
 
 use super::model::{AuthMethod, FolderId, Server, ServerStore, DEFAULT_PORT};
 
@@ -20,7 +20,7 @@ pub struct ImportSummary {
     pub skipped: usize,
 }
 
-/// `Include` dan blok `Match` tidak diikuti; host di dalamnya perlu ditambahkan manual.
+/// `Include` and `Match` blocks are not followed; hosts in them must be added by hand.
 pub fn parse_config(text: &str) -> Vec<ConfigHost> {
     let mut hosts: Vec<ConfigHost> = Vec::new();
     let mut current_start = None;
@@ -69,7 +69,7 @@ fn current_block(hosts: &mut [ConfigHost], start: Option<usize>) -> &mut [Config
     }
 }
 
-/// Memisahkan `Kata nilai` atau `Kata=nilai`, mengabaikan komentar dan baris kosong.
+/// Splits `Keyword value` or `Keyword=value`, skipping comments and blank lines.
 fn split_line(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -81,13 +81,13 @@ fn split_line(line: &str) -> Option<(&str, &str)> {
     Some((keyword, value.trim_end()))
 }
 
-/// Pola wildcard dan negasi bukan host yang bisa disambungkan.
+/// Wildcard and negated patterns are not hosts you can connect to.
 fn is_plain(pattern: &str) -> bool {
     !pattern.contains(['*', '?', '!'])
 }
 
-/// Menambah host baru ke folder "SSH Config". Host yang sudah ada dilewati, jadi import aman
-/// dijalankan berulang.
+/// Adds new hosts to the "SSH Config" folder. Existing hosts are skipped, so importing is safe to
+/// run repeatedly.
 pub fn merge_hosts(store: &mut ServerStore, hosts: Vec<ConfigHost>) -> ImportSummary {
     let mut summary = ImportSummary::default();
     let mut folder = existing_folder(store);
@@ -131,7 +131,7 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = "
-# komentar
+# a comment
 Host *
     ServerAliveInterval 30
 
@@ -139,20 +139,20 @@ Host cj cj-backup
     HostName 10.0.0.5
     User root
     Port 2222
-    IdentityFile ~/.ssh/kunci
+    IdentityFile ~/.ssh/my_key
 
 host=web
   user=deploy
 
-Host !larangan pola-* satu
-  User \"ada kutip\"
+Host !blocked pattern-* one
+  User \"has quotes\"
 
 Match host khusus
   User tidakdipakai
 ";
 
     #[test]
-    fn host_dan_opsi_terbaca() {
+    fn hosts_and_options_are_read() {
         let hosts = parse_config(CONFIG);
         assert_eq!(
             hosts,
@@ -173,8 +173,8 @@ Match host khusus
                     port: 22
                 },
                 ConfigHost {
-                    alias: "satu".to_owned(),
-                    user: "ada kutip".to_owned(),
+                    alias: "one".to_owned(),
+                    user: "has quotes".to_owned(),
                     port: 22
                 },
             ]
@@ -182,14 +182,14 @@ Match host khusus
     }
 
     #[test]
-    fn config_kosong_tidak_panik() {
+    fn empty_config_does_not_panic() {
         assert!(parse_config("").is_empty());
-        assert!(parse_config("User tanpa-host\nHost").is_empty());
-        assert!(parse_config("Port bukan-angka\n# saja").is_empty());
+        assert!(parse_config("User no-host\nHost").is_empty());
+        assert!(parse_config("Port not-a-number\n# only").is_empty());
     }
 
     #[test]
-    fn import_masuk_ke_satu_folder_dan_memakai_alias() {
+    fn import_uses_one_folder_and_aliases() {
         let mut store = ServerStore::default();
         let summary = merge_hosts(&mut store, parse_config(CONFIG));
 
@@ -202,7 +202,7 @@ Match host khusus
     }
 
     #[test]
-    fn import_kedua_kali_tidak_menggandakan() {
+    fn second_import_adds_no_duplicates() {
         let mut store = ServerStore::default();
         merge_hosts(&mut store, parse_config(CONFIG));
         let summary = merge_hosts(&mut store, parse_config(CONFIG));
@@ -214,7 +214,7 @@ Match host khusus
     }
 
     #[test]
-    fn tanpa_host_baru_tidak_membuat_folder() {
+    fn no_new_hosts_creates_no_folder() {
         let mut store = ServerStore::default();
         merge_hosts(&mut store, Vec::new());
         assert!(store.folders.is_empty());

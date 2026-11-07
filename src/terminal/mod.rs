@@ -1,4 +1,4 @@
-//! Emulasi terminal: PTY, integrasi alacritty_terminal, input mapping, dan renderer.
+//! Terminal emulation: PTY, alacritty_terminal integration, input mapping, and renderer.
 
 mod colors;
 mod input;

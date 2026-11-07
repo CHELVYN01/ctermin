@@ -2,7 +2,7 @@
 name = "ctermin"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal native Windows dengan SSH manager, split pane, dan integrasi AI"
+description = "Native Windows terminal with an SSH manager, split panes, and AI integration"
 license = "MIT"
 
 [workspace]
@@ -10,26 +10,27 @@ license = "MIT"
 [dependencies]
 alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
-# Hanya renderer glow: wgpu memakai RAM jauh lebih besar dari target < 50MB.
-# wayland/x11 tidak relevan karena aplikasi ini khusus Windows.
+# Only the glow renderer: wgpu uses far more RAM than the < 50MB target allows.
+# wayland and x11 do not apply because this app is Windows-only.
 eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
 keyring = "4.2.0"
 portable-pty = "0.9.0"
-# native-tls = schannel Windows: binary lebih kecil, tanpa cmake, dan memakai cert store sistem.
+# native-tls means Windows schannel: a smaller binary, no cmake, and the system cert store.
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 toml = "1.2.1"
-windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [lints.clippy]
-# Aturan gaya kode di CLAUDE.md. `cargo clippy -- -D warnings` menjadikannya error.
+# Code style rules from CLAUDE.md. `cargo clippy -- -D warnings` turns these into errors.
 unwrap_used = "warn"
 expect_used = "warn"
 
 [profile.release]
-# Target binary < 15MB.
+# Binary size target: under 15MB.
 lto = true
 codegen-units = 1
 strip = true

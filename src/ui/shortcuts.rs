@@ -1,4 +1,4 @@
-//! Shortcut level aplikasi. Tombolnya diambil dari antrean event supaya tidak sampai ke terminal.
+//! App-level shortcuts. Their keys are taken out of the event queue so they never reach the terminal.
 
 use eframe::egui::{self, Event, Key, Modifiers};
 
@@ -13,6 +13,7 @@ pub enum Shortcut {
     Split(Axis),
     Focus(Direction),
     ToggleSidebar,
+    AiBar,
 }
 
 fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
@@ -25,6 +26,7 @@ fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
         Key::D if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Horizontal)),
         Key::E if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Vertical)),
         Key::B if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::ToggleSidebar),
+        Key::K if modifiers.matches_exact(Modifiers::CTRL) => Some(Shortcut::AiBar),
         Key::ArrowLeft if modifiers.matches_exact(Modifiers::ALT) => {
             Some(Shortcut::Focus(Direction::Left))
         }
@@ -41,8 +43,8 @@ fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
     }
 }
 
-/// Auto-repeat hanya berlaku untuk perpindahan. Menahan Ctrl+W tidak boleh menutup semua panel,
-/// dan menahan Ctrl+Shift+D tidak boleh membuat puluhan panel.
+/// Auto-repeat only applies to moving around. Holding Ctrl+W must not close every pane,
+/// and holding Ctrl+Shift+D must not create dozens of panes.
 fn repeats(shortcut: Shortcut) -> bool {
     matches!(
         shortcut,
@@ -50,7 +52,7 @@ fn repeats(shortcut: Shortcut) -> bool {
     )
 }
 
-/// Mengambil semua shortcut pada frame ini.
+/// Takes every shortcut in this frame.
 pub fn take(ctx: &egui::Context) -> Vec<Shortcut> {
     let mut taken = Vec::new();
     ctx.input_mut(|input| {
@@ -93,7 +95,7 @@ mod tests {
         }
     }
 
-    /// Mengembalikan shortcut yang terambil dan jumlah event yang tersisa untuk terminal.
+    /// Returns the shortcuts taken and how many events remain for the terminal.
     fn run(events: Vec<Event>) -> (Vec<Shortcut>, usize) {
         let ctx = egui::Context::default();
         let mut result = (Vec::new(), 0);
@@ -111,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn pemetaan_tombol() {
+    fn key_mapping() {
         let ctrl = Modifiers::CTRL;
         assert_eq!(shortcut(Key::T, ctrl), Some(Shortcut::Open));
         assert_eq!(shortcut(Key::W, ctrl), Some(Shortcut::Close));
@@ -123,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn kombinasi_lain_tetap_milik_terminal() {
+    fn other_combinations_stay_with_the_terminal() {
         assert_eq!(shortcut(Key::T, Modifiers::NONE), None);
         assert_eq!(shortcut(Key::Tab, Modifiers::NONE), None);
         assert_eq!(shortcut(Key::Tab, Modifiers::SHIFT), None);
@@ -132,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_tidak_sampai_ke_terminal() {
+    fn shortcuts_do_not_reach_the_terminal() {
         let (taken, left) = run(vec![
             key_event(Key::T, Modifiers::CTRL, false),
             key_event(Key::A, Modifiers::NONE, false),
@@ -142,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn menahan_ctrl_w_hanya_menutup_sekali() {
+    fn holding_ctrl_w_closes_only_once() {
         let (taken, left) = run(vec![
             key_event(Key::W, Modifiers::CTRL, false),
             key_event(Key::W, Modifiers::CTRL, true),
@@ -153,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn menahan_ctrl_tab_terus_berpindah() {
+    fn holding_ctrl_tab_keeps_moving() {
         let (taken, _) = run(vec![
             key_event(Key::Tab, Modifiers::CTRL, false),
             key_event(Key::Tab, Modifiers::CTRL, true),
@@ -162,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn pemetaan_split_dan_fokus() {
+    fn split_and_focus_mapping() {
         let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
         assert_eq!(
             shortcut(Key::D, ctrl_shift),
@@ -185,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn menahan_ctrl_shift_d_hanya_membagi_sekali() {
+    fn holding_ctrl_shift_d_splits_only_once() {
         let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
         let (taken, _) = run(vec![
             key_event(Key::D, ctrl_shift, false),

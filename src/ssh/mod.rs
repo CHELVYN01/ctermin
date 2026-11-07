@@ -1,4 +1,4 @@
-//! Server manager: model data, perintah ssh.exe, kredensial, dan import ssh config.
+//! Server manager: data model, ssh.exe commands, credentials, and ssh config import.
 
 pub mod askpass;
 pub mod command;

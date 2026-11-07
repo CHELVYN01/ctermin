@@ -1,4 +1,4 @@
-//! Data folder dan server. Password tidak ada di sini: tempatnya di Credential Manager.
+//! Folder and server data. Passwords are not here: they live in Credential Manager.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ pub struct FolderId(pub u64);
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "lowercase")]
 pub enum AuthMethod {
-    /// Kunci SSH. Tanpa `identity_file`, ssh memakai kunci bawaan atau ssh-agent.
+    /// An SSH key. Without `identity_file`, ssh uses its default keys or ssh-agent.
     Key {
         identity_file: Option<String>,
     },
@@ -28,7 +28,7 @@ pub struct Server {
     pub name: String,
     pub host: String,
     pub port: u16,
-    /// Kosong berarti mengikuti ssh config atau user Windows.
+    /// Empty means following ssh config or the Windows user.
     pub username: String,
     pub folder: Option<FolderId>,
     pub auth: AuthMethod,
@@ -73,7 +73,7 @@ impl ServerStore {
         }
     }
 
-    /// Server di dalamnya tidak ikut terhapus, tetapi keluar dari folder.
+    /// Its servers are not deleted; they just leave the folder.
     pub fn remove_folder(&mut self, id: FolderId) {
         self.folders.retain(|folder| folder.id != id);
         for server in &mut self.servers {
@@ -83,7 +83,7 @@ impl ServerStore {
         }
     }
 
-    /// Menambah server baru, atau mengganti server dengan id yang sama.
+    /// Adds a new server, or replaces the server with the same id.
     pub fn upsert_server(&mut self, server: Server) {
         match self.servers.iter_mut().find(|item| item.id == server.id) {
             Some(existing) => *existing = server,
@@ -119,7 +119,7 @@ mod tests {
         store.upsert_server(Server {
             id,
             name: name.to_owned(),
-            host: "contoh.local".to_owned(),
+            host: "example.local".to_owned(),
             port: DEFAULT_PORT,
             username: "user".to_owned(),
             folder,
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn id_tidak_dipakai_ulang_setelah_dihapus() {
+    fn ids_are_not_reused_after_deletion() {
         let mut store = ServerStore::default();
         let first = server(&mut store, "a", None);
         store.remove_server(first);
@@ -137,19 +137,19 @@ mod tests {
     }
 
     #[test]
-    fn upsert_mengganti_server_yang_sama() {
+    fn upsert_replaces_the_same_server() {
         let mut store = ServerStore::default();
-        let id = server(&mut store, "lama", None);
-        let mut edited = store.server(id).cloned().expect("server ada");
-        edited.name = "baru".to_owned();
+        let id = server(&mut store, "old", None);
+        let mut edited = store.server(id).cloned().expect("server exists");
+        edited.name = "new".to_owned();
         store.upsert_server(edited);
 
         assert_eq!(store.servers.len(), 1);
-        assert_eq!(store.server(id).map(|s| s.name.as_str()), Some("baru"));
+        assert_eq!(store.server(id).map(|s| s.name.as_str()), Some("new"));
     }
 
     #[test]
-    fn menghapus_folder_menyisakan_servernya() {
+    fn deleting_a_folder_keeps_its_servers() {
         let mut store = ServerStore::default();
         let folder = store.add_folder("cj".to_owned());
         let id = server(&mut store, "a", Some(folder));
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn server_dikelompokkan_per_folder() {
+    fn servers_are_grouped_by_folder() {
         let mut store = ServerStore::default();
         let folder = store.add_folder("cj".to_owned());
         server(&mut store, "a", Some(folder));

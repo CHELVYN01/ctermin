@@ -45,16 +45,6 @@ pub struct Pty {
     threads_alive: std::sync::Weak<()>,
 }
 
-/// The default shell: PowerShell in the user's home folder.
-pub fn default_shell() -> CommandBuilder {
-    let mut command = CommandBuilder::new("powershell.exe");
-    command.arg("-NoLogo");
-    if let Some(home) = std::env::var_os("USERPROFILE") {
-        command.cwd(home);
-    }
-    command
-}
-
 impl Pty {
     pub fn spawn(mut command: CommandBuilder, size: PtySize, notify: Notify) -> Result<Self> {
         command.env("TERM", "xterm-256color");

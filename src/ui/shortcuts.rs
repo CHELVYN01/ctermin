@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Event, Key, Modifiers};
 
+use crate::config::settings::ShortcutSettings;
 use crate::layout::{Axis, Direction};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -14,32 +15,113 @@ pub enum Shortcut {
     Focus(Direction),
     ToggleSidebar,
     AiBar,
+    Settings,
 }
 
-fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
-    let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
-    match key {
-        Key::T if modifiers.matches_exact(Modifiers::CTRL) => Some(Shortcut::Open),
-        Key::W if modifiers.matches_exact(Modifiers::CTRL) => Some(Shortcut::Close),
-        Key::Tab if modifiers.matches_exact(Modifiers::CTRL) => Some(Shortcut::Next),
-        Key::Tab if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Previous),
-        Key::D if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Horizontal)),
-        Key::E if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::Split(Axis::Vertical)),
-        Key::B if modifiers.matches_exact(ctrl_shift) => Some(Shortcut::ToggleSidebar),
-        Key::K if modifiers.matches_exact(Modifiers::CTRL) => Some(Shortcut::AiBar),
-        Key::ArrowLeft if modifiers.matches_exact(Modifiers::ALT) => {
-            Some(Shortcut::Focus(Direction::Left))
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Binding {
+    key: Key,
+    modifiers: Modifiers,
+}
+
+/// Reads a binding such as `Ctrl+Shift+D`. Modifier names ignore case.
+fn parse_binding(text: &str) -> Option<Binding> {
+    let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
+    let key = parts.pop()?;
+    let mut modifiers = Modifiers::NONE;
+    for part in parts {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" => modifiers.ctrl = true,
+            "shift" => modifiers.shift = true,
+            "alt" => modifiers.alt = true,
+            _ => return None,
         }
-        Key::ArrowRight if modifiers.matches_exact(Modifiers::ALT) => {
-            Some(Shortcut::Focus(Direction::Right))
+    }
+    let key = Key::from_name(key).or_else(|| Key::from_name(&key.to_ascii_uppercase()))?;
+    Some(Binding { key, modifiers })
+}
+
+/// App shortcuts in effect, built from `config.toml`.
+#[derive(Clone, Debug)]
+pub struct Keymap(Vec<(Binding, Shortcut)>);
+
+impl Keymap {
+    /// Invalid bindings fall back to their default. The second value lists them for the user.
+    pub fn from_settings(settings: &ShortcutSettings) -> (Self, Vec<String>) {
+        let defaults = ShortcutSettings::default();
+        let entries = [
+            (&settings.new_tab, &defaults.new_tab, Shortcut::Open),
+            (&settings.close_pane, &defaults.close_pane, Shortcut::Close),
+            (&settings.next_tab, &defaults.next_tab, Shortcut::Next),
+            (
+                &settings.previous_tab,
+                &defaults.previous_tab,
+                Shortcut::Previous,
+            ),
+            (
+                &settings.split_right,
+                &defaults.split_right,
+                Shortcut::Split(Axis::Horizontal),
+            ),
+            (
+                &settings.split_down,
+                &defaults.split_down,
+                Shortcut::Split(Axis::Vertical),
+            ),
+            (
+                &settings.focus_left,
+                &defaults.focus_left,
+                Shortcut::Focus(Direction::Left),
+            ),
+            (
+                &settings.focus_right,
+                &defaults.focus_right,
+                Shortcut::Focus(Direction::Right),
+            ),
+            (
+                &settings.focus_up,
+                &defaults.focus_up,
+                Shortcut::Focus(Direction::Up),
+            ),
+            (
+                &settings.focus_down,
+                &defaults.focus_down,
+                Shortcut::Focus(Direction::Down),
+            ),
+            (
+                &settings.toggle_sidebar,
+                &defaults.toggle_sidebar,
+                Shortcut::ToggleSidebar,
+            ),
+            (&settings.ai_bar, &defaults.ai_bar, Shortcut::AiBar),
+            (&settings.settings, &defaults.settings, Shortcut::Settings),
+        ];
+
+        let mut bindings = Vec::new();
+        let mut invalid = Vec::new();
+        for (text, default, shortcut) in entries {
+            let binding = parse_binding(text).or_else(|| {
+                invalid.push(text.clone());
+                parse_binding(default)
+            });
+            if let Some(binding) = binding {
+                bindings.push((binding, shortcut));
+            }
         }
-        Key::ArrowUp if modifiers.matches_exact(Modifiers::ALT) => {
-            Some(Shortcut::Focus(Direction::Up))
-        }
-        Key::ArrowDown if modifiers.matches_exact(Modifiers::ALT) => {
-            Some(Shortcut::Focus(Direction::Down))
-        }
-        _ => None,
+        (Self(bindings), invalid)
+    }
+
+    fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<Shortcut> {
+        self.0
+            .iter()
+            .find(|(binding, _)| binding.key == key && modifiers.matches_exact(binding.modifiers))
+            .map(|(_, shortcut)| *shortcut)
+    }
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::from_settings(&ShortcutSettings::default()).0
     }
 }
 
@@ -53,7 +135,7 @@ fn repeats(shortcut: Shortcut) -> bool {
 }
 
 /// Takes every shortcut in this frame.
-pub fn take(ctx: &egui::Context) -> Vec<Shortcut> {
+pub fn take(ctx: &egui::Context, keymap: &Keymap) -> Vec<Shortcut> {
     let mut taken = Vec::new();
     ctx.input_mut(|input| {
         input.events.retain(|event| {
@@ -67,7 +149,7 @@ pub fn take(ctx: &egui::Context) -> Vec<Shortcut> {
             else {
                 return true;
             };
-            let Some(shortcut) = shortcut(*key, *modifiers) else {
+            let Some(shortcut) = keymap.lookup(*key, *modifiers) else {
                 return true;
             };
             if !*repeat || repeats(shortcut) {
@@ -84,6 +166,10 @@ mod tests {
     use eframe::egui::RawInput;
 
     use super::*;
+
+    fn shortcut(key: Key, modifiers: Modifiers) -> Option<Shortcut> {
+        Keymap::default().lookup(key, modifiers)
+    }
 
     fn key_event(key: Key, modifiers: Modifiers, repeat: bool) -> Event {
         Event::Key {
@@ -104,7 +190,7 @@ mod tests {
             ..RawInput::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            let taken = take(ui.ctx());
+            let taken = take(ui.ctx(), &Keymap::default());
             let left = ui.input(|input| input.events.len());
             result = (taken, left);
         });

@@ -16,7 +16,7 @@ use alacritty_terminal::Term;
 use anyhow::Result;
 use portable_pty::{CommandBuilder, PtySize};
 
-use super::colors::Palette;
+use super::colors::{ColorScheme, Palette};
 use super::input::encode_paste;
 use super::pty::{Notify, Pty, PtyEvent};
 
@@ -101,7 +101,7 @@ impl TerminalSession {
             processor: Processor::new(),
             pty,
             term_events,
-            palette: Palette::new(),
+            palette: Palette::new(ColorScheme::default()),
             size,
             cell_pixels: (0, 0),
             exited: false,
@@ -152,6 +152,10 @@ impl TerminalSession {
 
     pub fn term(&self) -> &Term<EventProxy> {
         &self.term
+    }
+
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.palette = Palette::new(scheme);
     }
 
     pub fn palette(&self) -> &Palette {

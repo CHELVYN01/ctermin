@@ -14,7 +14,6 @@ use super::colors::SELECTION;
 use super::input::encode_key;
 use super::session::{GridSize, TerminalSession};
 
-const FONT_SIZE: f32 = 14.0;
 const PADDING: f32 = 4.0;
 const WHEEL_LINES_PER_TICK: f32 = 3.0;
 const CURSOR_THICKNESS: f32 = 2.0;
@@ -34,11 +33,15 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new() -> Self {
+    pub fn new(font_size: f32) -> Self {
         Self {
-            font: FontId::monospace(FONT_SIZE),
+            font: FontId::monospace(font_size),
             wheel_remainder: 0.0,
         }
+    }
+
+    pub fn set_font_size(&mut self, font_size: f32) {
+        self.font = FontId::monospace(font_size);
     }
 
     /// Draws one pane. `id` must stay the same for a pane while the layout changes.
@@ -497,7 +500,7 @@ mod tests {
         fn new(args: &[&str]) -> Self {
             let mut harness = Self {
                 ctx: egui::Context::default(),
-                view: TerminalView::new(),
+                view: TerminalView::new(14.0),
                 session: spawn(args),
                 time: 0.0,
             };

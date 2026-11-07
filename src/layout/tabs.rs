@@ -1,6 +1,10 @@
 //! The tab list and active tab. Each tab has its own pane tree and focused pane.
 
+use super::saved::{PaneSource, SavedNode, SavedSession, SavedTab};
 use super::tree::{Axis, Direction, Layout};
+
+/// A saved pane always keeps at least this share of its split.
+const MIN_SAVED_RATIO: f32 = 0.05;
 
 /// The unique identity of a pane. Never reused while the app runs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -28,6 +32,52 @@ impl Tabs {
     /// Opens a new tab at the far right and activates it.
     pub fn open(&mut self) -> PaneId {
         self.open_after(self.tabs.len())
+    }
+
+    /// Describes every tab for the session file.
+    pub fn snapshot(&self, source: impl Fn(PaneId) -> PaneSource) -> SavedSession {
+        SavedSession {
+            active: self.active,
+            tabs: self
+                .tabs
+                .iter()
+                .map(|tab| SavedTab {
+                    root: save_node(&tab.layout, &source),
+                })
+                .collect(),
+        }
+    }
+
+    /// Opens a saved tab with new pane ids and returns each pane with what it should run.
+    pub fn open_saved(&mut self, root: &SavedNode) -> Vec<(PaneId, PaneSource)> {
+        let mut panes = Vec::new();
+        let layout = self.restore_node(root, &mut panes);
+        if let Some((focused, _)) = panes.first().copied() {
+            self.tabs.push(Tab { layout, focused });
+            self.active = self.tabs.len() - 1;
+        }
+        panes
+    }
+
+    fn restore_node(&mut self, node: &SavedNode, panes: &mut Vec<(PaneId, PaneSource)>) -> Layout {
+        match node {
+            SavedNode::Pane { source } => {
+                let pane = self.new_pane();
+                panes.push((pane, *source));
+                Layout::Leaf(pane)
+            }
+            SavedNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => Layout::Split {
+                axis: *axis,
+                ratio: sane_ratio(*ratio),
+                a: Box::new(self.restore_node(first, panes)),
+                b: Box::new(self.restore_node(second, panes)),
+            },
+        }
     }
 
     /// Opens one tab with `count` panes in a balanced grid.
@@ -170,9 +220,33 @@ impl Tabs {
     }
 }
 
+/// The session file can be edited by hand, so a ratio cannot be trusted to be usable.
+fn sane_ratio(ratio: f32) -> f32 {
+    if ratio.is_finite() {
+        ratio.clamp(MIN_SAVED_RATIO, 1.0 - MIN_SAVED_RATIO)
+    } else {
+        0.5
+    }
+}
+
+fn save_node(layout: &Layout, source: &impl Fn(PaneId) -> PaneSource) -> SavedNode {
+    match layout {
+        Layout::Leaf(pane) => SavedNode::Pane {
+            source: source(*pane),
+        },
+        Layout::Split { axis, ratio, a, b } => SavedNode::Split {
+            axis: *axis,
+            ratio: *ratio,
+            first: Box::new(save_node(a, source)),
+            second: Box::new(save_node(b, source)),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::ShellKind;
 
     fn tabs(count: usize) -> Tabs {
         let mut tabs = Tabs::default();
@@ -216,6 +290,32 @@ mod tests {
         assert_eq!(tabs.pane_counts().len(), 2, "an empty group creates no tab");
     }
 
+    #[test]
+    fn saved_layout_comes_back_with_the_same_shape() {
+        let shell = PaneSource::Shell {
+            shell: ShellKind::Cmd,
+        };
+        let mut original = tabs(1);
+        original.split_focused(Axis::Horizontal);
+        original.split_focused(Axis::Vertical);
+        let saved = original.snapshot(|_| shell);
+
+        let mut restored = Tabs::default();
+        let panes = restored.open_saved(&saved.tabs[0].root);
+
+        assert_eq!(panes.len(), 3);
+        assert!(panes.iter().all(|(_, source)| *source == shell));
+        assert_eq!(restored.pane_counts(), vec![3]);
+        assert_eq!(restored.snapshot(|_| shell).tabs, saved.tabs);
+    }
+
+    #[test]
+    fn hand_edited_ratios_are_made_usable() {
+        assert_eq!(sane_ratio(0.5), 0.5);
+        assert_eq!(sane_ratio(-3.0), MIN_SAVED_RATIO);
+        assert_eq!(sane_ratio(9.0), 1.0 - MIN_SAVED_RATIO);
+        assert_eq!(sane_ratio(f32::NAN), 0.5);
+    }
     #[test]
     fn pane_count_per_tab() {
         let mut tabs = tabs(2);

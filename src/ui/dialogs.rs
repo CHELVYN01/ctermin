@@ -3,8 +3,12 @@
 use eframe::egui::{self, ComboBox, Grid, Id, Modal, TextEdit};
 
 use crate::ai::settings::{model_options, AiSettings, ProviderKind, DEFAULT_API_MODEL};
+use crate::config::settings::{
+    AppConfig, Appearance, TerminalSettings, MAX_FONT_SIZE, MIN_FONT_SIZE,
+};
 use crate::ssh::command::is_safe_ssh_value;
 use crate::ssh::model::{AuthMethod, Folder, FolderId, Server, ServerId, DEFAULT_PORT};
+use crate::terminal::{ColorScheme, ShellKind, TerminalFont};
 
 const FIELD_WIDTH: f32 = 260.0;
 const CUSTOM_MODEL_LABEL: &str = "Other...";
@@ -463,6 +467,96 @@ pub fn show_ai_settings(ctx: &egui::Context, id: Id, form: &mut AiSettingsForm) 
 
         ui.add_space(6.0);
         show_error(ui, form.error.as_deref());
+        buttons(ui, "Save")
+    });
+    finish(response.inner, response.should_close())
+}
+
+pub struct SettingsForm {
+    pub appearance: Appearance,
+    pub terminal: TerminalSettings,
+    shells: Vec<ShellKind>,
+    config_path: String,
+}
+
+impl SettingsForm {
+    pub fn new(config: &AppConfig, config_path: String) -> Self {
+        let mut appearance = config.appearance.clone();
+        appearance.font_size = appearance.clamped_font_size();
+        Self {
+            appearance,
+            terminal: config.terminal.clone(),
+            shells: ShellKind::available(config.terminal.default_shell),
+            config_path,
+        }
+    }
+}
+
+pub fn show_settings(ctx: &egui::Context, id: Id, form: &mut SettingsForm) -> DialogResult {
+    let response = Modal::new(id).show(ctx, |ui| {
+        ui.heading("Settings");
+        ui.add_space(6.0);
+
+        Grid::new("settings").num_columns(2).show(ui, |ui| {
+            ui.label("Color scheme");
+            ComboBox::from_id_salt("color_scheme")
+                .width(FIELD_WIDTH)
+                .selected_text(form.appearance.color_scheme.label())
+                .show_ui(ui, |ui| {
+                    for scheme in ColorScheme::ALL {
+                        ui.selectable_value(
+                            &mut form.appearance.color_scheme,
+                            scheme,
+                            scheme.label(),
+                        );
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Font");
+            ComboBox::from_id_salt("font")
+                .width(FIELD_WIDTH)
+                .selected_text(form.appearance.font.label())
+                .show_ui(ui, |ui| {
+                    for font in TerminalFont::ALL {
+                        ui.selectable_value(&mut form.appearance.font, font, font.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Font size");
+            ui.add(egui::Slider::new(
+                &mut form.appearance.font_size,
+                MIN_FONT_SIZE..=MAX_FONT_SIZE,
+            ));
+            ui.end_row();
+
+            ui.label("Default shell");
+            ComboBox::from_id_salt("default_shell")
+                .width(FIELD_WIDTH)
+                .selected_text(form.terminal.default_shell.label())
+                .show_ui(ui, |ui| {
+                    for shell in &form.shells {
+                        ui.selectable_value(
+                            &mut form.terminal.default_shell,
+                            *shell,
+                            shell.label(),
+                        );
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Startup");
+            ui.checkbox(
+                &mut form.terminal.restore_session,
+                "Restore last tabs and splits",
+            );
+            ui.end_row();
+        });
+
+        ui.add_space(6.0);
+        ui.small(format!("Shortcuts are edited in {}", form.config_path));
+        ui.add_space(6.0);
         buttons(ui, "Save")
     });
     finish(response.inner, response.should_close())

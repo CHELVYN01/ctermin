@@ -7,6 +7,7 @@ use eframe::egui::{
 
 use crate::layout::Axis;
 use crate::ssh::model::ServerId;
+use crate::terminal::ShellKind;
 
 pub const BAR_HEIGHT: f32 = 32.0;
 const MAX_TAB_WIDTH: f32 = 200.0;
@@ -35,6 +36,8 @@ pub enum TabAction {
     Split(usize, Axis),
     ClosePane(usize),
     Connect(ServerId),
+    OpenShell(ShellKind),
+    OpenSettings,
 }
 
 /// The data shown for one tab.
@@ -47,6 +50,12 @@ pub struct TabItem {
 pub struct ServerGroup {
     pub title: Option<String>,
     pub servers: Vec<(ServerId, String)>,
+}
+
+/// What the new tab menu offers.
+pub struct NewTabMenu {
+    pub shells: Vec<ShellKind>,
+    pub groups: Vec<ServerGroup>,
 }
 
 /// Width of each tab: it shrinks as tabs are added, down to a minimum.
@@ -111,7 +120,7 @@ pub fn show(
     ui: &mut egui::Ui,
     items: &[TabItem],
     active: usize,
-    groups: &[ServerGroup],
+    menu: &NewTabMenu,
 ) -> Option<TabAction> {
     let bar = ui.max_rect();
     let painter = ui.painter_at(bar);
@@ -199,7 +208,7 @@ pub fn show(
     paint_chevron(&painter, dropdown);
     Popup::menu(&response).show(|ui| {
         ui.set_min_width(MENU_WIDTH);
-        if let Some(chosen) = new_tab_menu(ui, groups) {
+        if let Some(chosen) = new_tab_menu(ui, menu) {
             action = Some(chosen);
         }
     });
@@ -218,23 +227,22 @@ fn paint_chevron(painter: &Painter, rect: Rect) {
     painter.add(Shape::convex_polygon(points, TEXT_COLOR, Stroke::NONE));
 }
 
-/// The new tab menu: the shell, then servers by folder.
-fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> {
+/// The new tab menu: shells, then servers by folder, then settings.
+fn new_tab_menu(ui: &mut egui::Ui, menu: &NewTabMenu) -> Option<TabAction> {
     let mut action = None;
-    if ui
-        .add(Button::new("PowerShell").shortcut_text("Ctrl+T"))
-        .clicked()
-    {
-        action = Some(TabAction::New);
+    for shell in &menu.shells {
+        if ui.button(shell.label()).clicked() {
+            action = Some(TabAction::OpenShell(*shell));
+        }
     }
     ui.separator();
-    if groups.is_empty() {
+    if menu.groups.is_empty() {
         ui.weak("No servers yet");
     }
     ScrollArea::vertical()
         .max_height(MENU_MAX_HEIGHT)
         .show(ui, |ui| {
-            for group in groups {
+            for group in &menu.groups {
                 if let Some(title) = &group.title {
                     ui.weak(title);
                 }
@@ -245,6 +253,10 @@ fn new_tab_menu(ui: &mut egui::Ui, groups: &[ServerGroup]) -> Option<TabAction> 
                 }
             }
         });
+    ui.separator();
+    if ui.button("Settings").clicked() {
+        action = Some(TabAction::OpenSettings);
+    }
     if action.is_some() {
         ui.close();
     }

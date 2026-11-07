@@ -1,46 +1,170 @@
-//! Color palette and final color resolution for each cell.
+//! Color schemes, the palette, and final color resolution for each cell.
 
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::{Colors, COUNT};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+use serde::{Deserialize, Serialize};
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
 }
 
-const ANSI: [Rgb; 16] = [
-    rgb(0x0c, 0x0c, 0x0c),
-    rgb(0xc5, 0x0f, 0x1f),
-    rgb(0x13, 0xa1, 0x0e),
-    rgb(0xc1, 0x9c, 0x00),
-    rgb(0x00, 0x37, 0xda),
-    rgb(0x88, 0x17, 0x98),
-    rgb(0x3a, 0x96, 0xdd),
-    rgb(0xcc, 0xcc, 0xcc),
-    rgb(0x76, 0x76, 0x76),
-    rgb(0xe7, 0x48, 0x56),
-    rgb(0x16, 0xc6, 0x0c),
-    rgb(0xf9, 0xf1, 0xa5),
-    rgb(0x3b, 0x78, 0xff),
-    rgb(0xb4, 0x00, 0x9e),
-    rgb(0x61, 0xd6, 0xd6),
-    rgb(0xf2, 0xf2, 0xf2),
-];
-const FOREGROUND: Rgb = rgb(0xcc, 0xcc, 0xcc);
-const BACKGROUND: Rgb = rgb(0x0c, 0x0c, 0x0c);
-const CURSOR: Rgb = rgb(0xe6, 0xe6, 0xe6);
-const BRIGHT_FOREGROUND: Rgb = rgb(0xf2, 0xf2, 0xf2);
+const fn hex(value: u32) -> Rgb {
+    rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
+}
+
 const DIM_FACTOR: f32 = 0.66;
 
 pub const SELECTION: Rgb = rgb(0x26, 0x4f, 0x78);
+
+struct SchemeColors {
+    ansi: [Rgb; 16],
+    foreground: Rgb,
+    background: Rgb,
+    cursor: Rgb,
+}
+
+const CAMPBELL: SchemeColors = SchemeColors {
+    ansi: [
+        hex(0x0c0c0c),
+        hex(0xc50f1f),
+        hex(0x13a10e),
+        hex(0xc19c00),
+        hex(0x0037da),
+        hex(0x881798),
+        hex(0x3a96dd),
+        hex(0xcccccc),
+        hex(0x767676),
+        hex(0xe74856),
+        hex(0x16c60c),
+        hex(0xf9f1a5),
+        hex(0x3b78ff),
+        hex(0xb4009e),
+        hex(0x61d6d6),
+        hex(0xf2f2f2),
+    ],
+    foreground: hex(0xcccccc),
+    background: hex(0x0c0c0c),
+    cursor: hex(0xe6e6e6),
+};
+
+const ONE_HALF_DARK: SchemeColors = SchemeColors {
+    ansi: [
+        hex(0x282c34),
+        hex(0xe06c75),
+        hex(0x98c379),
+        hex(0xe5c07b),
+        hex(0x61afef),
+        hex(0xc678dd),
+        hex(0x56b6c2),
+        hex(0xdcdfe4),
+        hex(0x5a6374),
+        hex(0xe06c75),
+        hex(0x98c379),
+        hex(0xe5c07b),
+        hex(0x61afef),
+        hex(0xc678dd),
+        hex(0x56b6c2),
+        hex(0xdcdfe4),
+    ],
+    foreground: hex(0xdcdfe4),
+    background: hex(0x282c34),
+    cursor: hex(0xa3b3cc),
+};
+
+const SOLARIZED_DARK: SchemeColors = SchemeColors {
+    ansi: [
+        hex(0x073642),
+        hex(0xdc322f),
+        hex(0x859900),
+        hex(0xb58900),
+        hex(0x268bd2),
+        hex(0xd33682),
+        hex(0x2aa198),
+        hex(0xeee8d5),
+        hex(0x002b36),
+        hex(0xcb4b16),
+        hex(0x586e75),
+        hex(0x657b83),
+        hex(0x839496),
+        hex(0x6c71c4),
+        hex(0x93a1a1),
+        hex(0xfdf6e3),
+    ],
+    foreground: hex(0x839496),
+    background: hex(0x002b36),
+    cursor: hex(0x93a1a1),
+};
+
+const DRACULA: SchemeColors = SchemeColors {
+    ansi: [
+        hex(0x21222c),
+        hex(0xff5555),
+        hex(0x50fa7b),
+        hex(0xf1fa8c),
+        hex(0xbd93f9),
+        hex(0xff79c6),
+        hex(0x8be9fd),
+        hex(0xf8f8f2),
+        hex(0x6272a4),
+        hex(0xff6e6e),
+        hex(0x69ff94),
+        hex(0xffffa5),
+        hex(0xd6acff),
+        hex(0xff92df),
+        hex(0xa4ffff),
+        hex(0xffffff),
+    ],
+    foreground: hex(0xf8f8f2),
+    background: hex(0x282a36),
+    cursor: hex(0xf8f8f2),
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorScheme {
+    #[default]
+    Campbell,
+    OneHalfDark,
+    SolarizedDark,
+    Dracula,
+}
+
+impl ColorScheme {
+    pub const ALL: [Self; 4] = [
+        Self::Campbell,
+        Self::OneHalfDark,
+        Self::SolarizedDark,
+        Self::Dracula,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Campbell => "Campbell",
+            Self::OneHalfDark => "One Half Dark",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::Dracula => "Dracula",
+        }
+    }
+
+    fn colors(self) -> &'static SchemeColors {
+        match self {
+            Self::Campbell => &CAMPBELL,
+            Self::OneHalfDark => &ONE_HALF_DARK,
+            Self::SolarizedDark => &SOLARIZED_DARK,
+            Self::Dracula => &DRACULA,
+        }
+    }
+}
 
 /// Default colors for every terminal color index.
 pub struct Palette([Rgb; COUNT]);
 
 impl Palette {
-    pub fn new() -> Self {
-        let mut colors = [BACKGROUND; COUNT];
-        colors[..16].copy_from_slice(&ANSI);
+    pub fn new(scheme: ColorScheme) -> Self {
+        let scheme = scheme.colors();
+        let mut colors = [scheme.background; COUNT];
+        colors[..16].copy_from_slice(&scheme.ansi);
 
         // 6x6x6 color cube.
         const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
@@ -58,12 +182,12 @@ impl Palette {
             *slot = rgb(level, level, level);
         }
 
-        colors[NamedColor::Foreground as usize] = FOREGROUND;
-        colors[NamedColor::Background as usize] = BACKGROUND;
-        colors[NamedColor::Cursor as usize] = CURSOR;
-        colors[NamedColor::BrightForeground as usize] = BRIGHT_FOREGROUND;
-        colors[NamedColor::DimForeground as usize] = dim(FOREGROUND);
-        for (index, ansi) in ANSI[..8].iter().enumerate() {
+        colors[NamedColor::Foreground as usize] = scheme.foreground;
+        colors[NamedColor::Background as usize] = scheme.background;
+        colors[NamedColor::Cursor as usize] = scheme.cursor;
+        colors[NamedColor::BrightForeground as usize] = scheme.ansi[15];
+        colors[NamedColor::DimForeground as usize] = dim(scheme.foreground);
+        for (index, ansi) in scheme.ansi[..8].iter().enumerate() {
             colors[NamedColor::DimBlack as usize + index] = dim(*ansi);
         }
 
@@ -141,7 +265,7 @@ mod tests {
 
     #[test]
     fn palette_of_256_colors_matches_xterm() {
-        let palette = Palette::new();
+        let palette = Palette::new(ColorScheme::Campbell);
         let overrides = Colors::default();
         assert_eq!(palette.indexed(16, &overrides), rgb(0, 0, 0));
         assert_eq!(palette.indexed(21, &overrides), rgb(0, 0, 255));
@@ -152,7 +276,7 @@ mod tests {
 
     #[test]
     fn app_colors_take_priority() {
-        let palette = Palette::new();
+        let palette = Palette::new(ColorScheme::Campbell);
         let mut overrides = Colors::default();
         overrides[NamedColor::Background] = Some(rgb(1, 2, 3));
         assert_eq!(
@@ -163,19 +287,19 @@ mod tests {
 
     #[test]
     fn cell_attributes() {
-        let palette = Palette::new();
+        let palette = Palette::new(ColorScheme::Campbell);
         let overrides = Colors::default();
         let red = Color::Named(NamedColor::Red);
         let blue = Color::Spec(rgb(0, 0, 200));
 
         let (fg, bg) = palette.cell_colors(&cell(red, blue, Flags::empty()), &overrides);
-        assert_eq!((fg, bg), (ANSI[1], rgb(0, 0, 200)));
+        assert_eq!((fg, bg), (CAMPBELL.ansi[1], rgb(0, 0, 200)));
 
         let (fg, _) = palette.cell_colors(&cell(red, blue, Flags::BOLD), &overrides);
-        assert_eq!(fg, ANSI[9]);
+        assert_eq!(fg, CAMPBELL.ansi[9]);
 
         let (fg, bg) = palette.cell_colors(&cell(red, blue, Flags::INVERSE), &overrides);
-        assert_eq!((fg, bg), (rgb(0, 0, 200), ANSI[1]));
+        assert_eq!((fg, bg), (rgb(0, 0, 200), CAMPBELL.ansi[1]));
 
         let (fg, bg) = palette.cell_colors(&cell(red, blue, Flags::HIDDEN), &overrides);
         assert_eq!(fg, bg);

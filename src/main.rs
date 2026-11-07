@@ -21,6 +21,7 @@ fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ctermin")
+            .with_icon(window_icon())
             .with_inner_size([960.0, 600.0])
             .with_min_inner_size([320.0, 200.0]),
         ..Default::default()
@@ -32,4 +33,13 @@ fn main() -> anyhow::Result<()> {
         Box::new(|cc| Ok(Box::new(CterminApp::new(&cc.egui_ctx)))),
     )
     .map_err(|err| anyhow!("Could not open the ctermin window: {err}"))
+}
+
+/// Raw pixels from `assets/make_icon.ps1`, so the app needs no image decoder.
+fn window_icon() -> egui::IconData {
+    egui::IconData {
+        rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
+        width: 64,
+        height: 64,
+    }
 }

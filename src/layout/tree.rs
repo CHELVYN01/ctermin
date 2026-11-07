@@ -1,6 +1,7 @@
 //! The split pane tree: each leaf is one pane, each branch divides its space in two.
 
 use eframe::egui::{pos2, vec2, Pos2, Rect};
+use serde::{Deserialize, Serialize};
 
 use super::PaneId;
 
@@ -12,7 +13,8 @@ const EPSILON: f32 = 0.001;
 pub const DIVIDER_THICKNESS: f32 = 2.0;
 
 /// The direction space is divided in.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Axis {
     /// Panes side by side, left and right.
     Horizontal,

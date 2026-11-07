@@ -1,5 +1,7 @@
 //! Location and storage of data files in `%APPDATA%\ctermin`.
 
+pub mod settings;
+
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -8,12 +10,14 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::ai::settings::AppConfig;
+use crate::layout::SavedSession;
 use crate::ssh::model::ServerStore;
+use settings::AppConfig;
 
 const APP_FOLDER: &str = "ctermin";
 pub const SERVERS_FILE: &str = "servers.toml";
 pub const CONFIG_FILE: &str = "config.toml";
+pub const SESSION_FILE: &str = "session.toml";
 const DAMAGED_SUFFIX: &str = "damaged";
 const TEMPORARY_SUFFIX: &str = "tmp";
 
@@ -26,6 +30,7 @@ pub struct TomlFile<T> {
 
 pub type ServerRepository = TomlFile<ServerStore>;
 pub type ConfigFile = TomlFile<AppConfig>;
+pub type SessionFile = TomlFile<SavedSession>;
 
 impl<T: Default + Serialize + DeserializeOwned> TomlFile<T> {
     /// Opens a file in `%APPDATA%\ctermin`. The second value holds a warning for the user.
@@ -78,6 +83,18 @@ impl<T: Default + Serialize + DeserializeOwned> TomlFile<T> {
                 (Self { data, path }, Some(warning))
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn in_memory(data: T) -> Self {
+        Self { data, path: None }
+    }
+
+    /// Where the file lives, to show to the user.
+    pub fn path_label(&self) -> String {
+        self.path
+            .as_ref()
+            .map_or_else(|| CONFIG_FILE.to_owned(), |path| path.display().to_string())
     }
 
     pub fn save(&self) -> Result<()> {

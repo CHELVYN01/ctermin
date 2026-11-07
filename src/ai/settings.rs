@@ -24,12 +24,6 @@ pub struct AiSettings {
     pub model: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub struct AppConfig {
-    #[serde(default)]
-    pub ai: AiSettings,
-}
-
 /// One model choice in the settings.
 pub struct ModelOption {
     pub id: &'static str,
@@ -90,6 +84,7 @@ pub fn model_options(provider: ProviderKind) -> &'static [ModelOption] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::settings::AppConfig;
 
     #[test]
     fn old_config_without_ai_section_still_loads() {

@@ -11,18 +11,22 @@ use crate::ai::client::{AiClient, AiResult};
 use crate::ai::danger::danger_reason;
 use crate::ai::prompt::{clean_suggestion, explain_prompt, suggest_prompt, AiPrompt, PaneContext};
 use crate::ai::settings::ProviderKind;
-use crate::config::{ConfigFile, ServerRepository, CONFIG_FILE, SERVERS_FILE};
-use crate::layout::{Axis, PaneId, Tabs, DIVIDER_THICKNESS};
+use crate::config::{
+    ConfigFile, ServerRepository, SessionFile, CONFIG_FILE, SERVERS_FILE, SESSION_FILE,
+};
+use crate::layout::{Axis, PaneId, PaneSource, SavedSession, Tabs, DIVIDER_THICKNESS};
 use crate::ssh::command::ssh_command;
 use crate::ssh::model::{AuthMethod, FolderId, Server, ServerId};
 use crate::ssh::{credentials, import};
-use crate::terminal::{default_shell, GridSize, TerminalSession, TerminalView};
+use crate::terminal::{font_definitions, GridSize, ShellKind, TerminalSession, TerminalView};
 use crate::ui::ai_bar::{AiBar, AiBarAction, AiPhase, RequestKind};
-use crate::ui::dialogs::{self, AiSettingsForm, DialogResult, FolderForm, ServerForm};
-use crate::ui::shortcuts::{self, Shortcut};
+use crate::ui::dialogs::{
+    self, AiSettingsForm, DialogResult, FolderForm, ServerForm, SettingsForm,
+};
+use crate::ui::shortcuts::{self, Keymap, Shortcut};
 use crate::ui::sidebar::{ServerStatus, Sidebar, SidebarAction, SIDEBAR_WIDTH};
 use crate::ui::split_view;
-use crate::ui::tab_bar::{self, ServerGroup, TabAction, TabItem, BAR_HEIGHT};
+use crate::ui::tab_bar::{self, NewTabMenu, ServerGroup, TabAction, TabItem, BAR_HEIGHT};
 
 const INITIAL_COLUMNS: usize = 80;
 const INITIAL_LINES: usize = 24;
@@ -31,13 +35,6 @@ const FAILED_TAB_TITLE: &str = "Failed";
 /// How many of the last lines are offered for the AI to explain.
 const EXPLAIN_LINES: usize = 40;
 const TARGET_CLOSED: &str = "The target pane is no longer active.";
-
-/// What a pane runs. Split, duplicate, and reconnect use the same source.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PaneSource {
-    Shell,
-    Server(ServerId),
-}
 
 struct Pane {
     source: PaneSource,
@@ -51,6 +48,7 @@ enum Dialog {
     DeleteServer(ServerId, String),
     DeleteFolder(FolderId, String),
     AiSettings(AiSettingsForm),
+    Settings(SettingsForm),
 }
 
 /// Main application state.
@@ -58,7 +56,6 @@ pub struct CterminApp {
     tabs: Tabs,
     panes: HashMap<PaneId, Pane>,
     view: TerminalView,
-    shell: fn() -> CommandBuilder,
     window_title: String,
     repository: ServerRepository,
     sidebar: Sidebar,
@@ -66,6 +63,8 @@ pub struct CterminApp {
     dialog: Option<Dialog>,
     notice: Option<String>,
     config: ConfigFile,
+    session_file: SessionFile,
+    keymap: Keymap,
     ai: AiClient,
     ai_bar: Option<AiBar>,
 }
@@ -74,25 +73,30 @@ impl CterminApp {
     pub fn new(ctx: &egui::Context) -> Self {
         let (repository, server_warning) = ServerRepository::open_default(SERVERS_FILE);
         let (config, config_warning) = ConfigFile::open_default(CONFIG_FILE);
-        let mut app = Self::with_parts(ctx, default_shell, repository, config);
-        app.notice = server_warning.or(config_warning);
+        let (session_file, session_warning) = SessionFile::open_default(SESSION_FILE);
+        let mut app = Self::with_parts(ctx, repository, config, session_file);
+        app.notice = server_warning
+            .or(config_warning)
+            .or(session_warning)
+            .or(app.notice.take());
         app
     }
 
     fn with_parts(
         ctx: &egui::Context,
-        shell: fn() -> CommandBuilder,
         repository: ServerRepository,
         config: ConfigFile,
+        session_file: SessionFile,
     ) -> Self {
         ctx.set_theme(egui::Theme::Dark);
         // Ctrl+Plus and Ctrl+Minus must reach the terminal, not change egui's zoom.
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
+        let (keymap, invalid_shortcuts) = Keymap::from_settings(&config.data.shortcuts);
+        let font_size = config.data.appearance.clamped_font_size();
         let mut app = Self {
             tabs: Tabs::default(),
             panes: HashMap::new(),
-            view: TerminalView::new(),
-            shell,
+            view: TerminalView::new(font_size),
             window_title: String::new(),
             repository,
             sidebar: Sidebar::default(),
@@ -100,11 +104,102 @@ impl CterminApp {
             dialog: None,
             notice: None,
             config,
+            session_file,
+            keymap,
             ai: AiClient::new(),
             ai_bar: None,
         };
-        app.open_tab(ctx, PaneSource::Shell);
+        app.apply_font(ctx);
+        if !invalid_shortcuts.is_empty() {
+            app.notice = Some(format!(
+                "Invalid shortcuts ignored: {}",
+                invalid_shortcuts.join(", ")
+            ));
+        }
+        app.restore_tabs(ctx);
         app
+    }
+
+    fn default_source(&self) -> PaneSource {
+        PaneSource::Shell {
+            shell: self.config.data.terminal.default_shell,
+        }
+    }
+
+    /// Brings back the last session, or opens the default shell.
+    fn restore_tabs(&mut self, ctx: &egui::Context) {
+        if self.config.data.terminal.restore_session {
+            let saved = self.session_file.data.clone();
+            for tab in &saved.tabs {
+                for (pane, source) in self.tabs.open_saved(&tab.root) {
+                    let source = self.usable_source(source);
+                    let spawned = self.spawn_pane(ctx, source);
+                    self.panes.insert(pane, spawned);
+                }
+            }
+            self.tabs.select(saved.active);
+        }
+        if self.tabs.is_empty() {
+            self.open_tab(ctx, self.default_source());
+        }
+    }
+
+    /// A saved pane for a server that no longer exists opens the default shell instead.
+    fn usable_source(&self, source: PaneSource) -> PaneSource {
+        match source {
+            PaneSource::Server { id } if self.repository.data.server(id).is_none() => {
+                self.default_source()
+            }
+            source => source,
+        }
+    }
+
+    fn session_snapshot(&self) -> SavedSession {
+        let fallback = self.default_source();
+        self.tabs
+            .snapshot(|pane| self.panes.get(&pane).map_or(fallback, |pane| pane.source))
+    }
+
+    fn apply_font(&mut self, ctx: &egui::Context) {
+        match font_definitions(self.config.data.appearance.font) {
+            Ok(definitions) => ctx.set_fonts(definitions),
+            Err(message) => self.notice = Some(message),
+        }
+    }
+
+    /// Applies settings to everything already open, without a restart.
+    fn apply_settings(&mut self, ctx: &egui::Context, form: SettingsForm) {
+        let font_changed = form.appearance.font != self.config.data.appearance.font;
+        self.config.data.appearance = form.appearance;
+        self.config.data.terminal = form.terminal;
+        if font_changed {
+            self.apply_font(ctx);
+        }
+        let appearance = &self.config.data.appearance;
+        self.view.set_font_size(appearance.clamped_font_size());
+        let scheme = appearance.color_scheme;
+        for session in self
+            .panes
+            .values_mut()
+            .filter_map(|pane| pane.session.as_mut().ok())
+        {
+            session.set_color_scheme(scheme);
+        }
+        if let Err(err) = self.config.save() {
+            self.notice = Some(format!("{err:#}"));
+        }
+    }
+
+    fn open_settings(&mut self) {
+        let form = SettingsForm::new(&self.config.data, self.config.path_label());
+        self.dialog = Some(Dialog::Settings(form));
+    }
+
+    fn new_tab_menu(&self) -> NewTabMenu {
+        NewTabMenu {
+            shells: ShellKind::available(self.config.data.terminal.default_shell),
+            groups: self.server_groups(),
+        }
     }
 
     fn open_tab(&mut self, ctx: &egui::Context, source: PaneSource) {
@@ -138,13 +233,13 @@ impl CterminApp {
         self.tabs
             .active()
             .and_then(|pane| self.panes.get(&pane))
-            .map_or(PaneSource::Shell, |pane| pane.source)
+            .map_or(self.default_source(), |pane| pane.source)
     }
 
     fn spawn_pane(&self, ctx: &egui::Context, source: PaneSource) -> Pane {
         let session = match source {
-            PaneSource::Shell => self.spawn_session(ctx, (self.shell)()),
-            PaneSource::Server(id) => match self.repository.data.server(id) {
+            PaneSource::Shell { shell } => self.spawn_session(ctx, shell.command()),
+            PaneSource::Server { id } => match self.repository.data.server(id) {
                 Some(server) => self.spawn_server(ctx, server),
                 None => Err("This server has been deleted.".to_owned()),
             },
@@ -171,7 +266,10 @@ impl CterminApp {
         let ctx = ctx.clone();
         let notify = Arc::new(move || ctx.request_repaint());
         let size = GridSize::new(INITIAL_COLUMNS, INITIAL_LINES);
-        TerminalSession::spawn(command, size, notify).map_err(|err| format!("{err:#}"))
+        let mut session =
+            TerminalSession::spawn(command, size, notify).map_err(|err| format!("{err:#}"))?;
+        session.set_color_scheme(self.config.data.appearance.color_scheme);
+        Ok(session)
     }
 
     /// Every pane is processed, not just visible ones: an unread pane would fill its
@@ -212,7 +310,7 @@ impl CterminApp {
         let exited: Vec<PaneId> = self
             .panes
             .iter()
-            .filter(|(_, pane)| pane.source == PaneSource::Server(id))
+            .filter(|(_, pane)| pane.source == PaneSource::Server { id })
             .map(|(pane, _)| *pane)
             .filter(|pane| self.pane_exited(*pane))
             .collect();
@@ -233,7 +331,7 @@ impl CterminApp {
             return;
         }
         for (pane, server) in self.tabs.open_group(servers.len()).into_iter().zip(servers) {
-            let spawned = self.spawn_pane(ctx, PaneSource::Server(server));
+            let spawned = self.spawn_pane(ctx, PaneSource::Server { id: server });
             self.panes.insert(pane, spawned);
         }
     }
@@ -241,7 +339,7 @@ impl CterminApp {
     fn server_statuses(&self) -> HashMap<ServerId, ServerStatus> {
         let mut statuses = HashMap::new();
         for (pane_id, pane) in &self.panes {
-            let PaneSource::Server(server) = pane.source else {
+            let PaneSource::Server { id: server } = pane.source else {
                 continue;
             };
             if self.pane_exited(*pane_id) {
@@ -254,9 +352,10 @@ impl CterminApp {
     }
 
     fn apply_shortcuts(&mut self, ctx: &egui::Context) {
-        for shortcut in shortcuts::take(ctx) {
+        let keymap = self.keymap.clone();
+        for shortcut in shortcuts::take(ctx, &keymap) {
             match shortcut {
-                Shortcut::Open => self.open_tab(ctx, PaneSource::Shell),
+                Shortcut::Open => self.open_tab(ctx, self.default_source()),
                 Shortcut::Close => self.close_focused_pane(),
                 Shortcut::Next => self.tabs.next(),
                 Shortcut::Previous => self.tabs.previous(),
@@ -264,6 +363,7 @@ impl CterminApp {
                 Shortcut::Focus(direction) => self.tabs.focus_direction(direction),
                 Shortcut::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
                 Shortcut::AiBar => self.open_ai_bar(),
+                Shortcut::Settings => self.open_settings(),
             }
         }
     }
@@ -272,15 +372,17 @@ impl CterminApp {
         match action {
             TabAction::Select(index) => self.tabs.select(index),
             TabAction::Close(index) => self.close_tab(index),
-            TabAction::New => self.open_tab(ctx, PaneSource::Shell),
-            TabAction::Connect(id) => self.open_tab(ctx, PaneSource::Server(id)),
+            TabAction::New => self.open_tab(ctx, self.default_source()),
+            TabAction::OpenShell(shell) => self.open_tab(ctx, PaneSource::Shell { shell }),
+            TabAction::OpenSettings => self.open_settings(),
+            TabAction::Connect(id) => self.open_tab(ctx, PaneSource::Server { id }),
             TabAction::Duplicate(index) => {
                 let source = self
                     .tabs
                     .focused_panes()
                     .get(index)
                     .and_then(|pane| self.panes.get(pane))
-                    .map_or(PaneSource::Shell, |pane| pane.source);
+                    .map_or(self.default_source(), |pane| pane.source);
                 let pane = self.tabs.open_after(index);
                 let spawned = self.spawn_pane(ctx, source);
                 self.panes.insert(pane, spawned);
@@ -299,7 +401,7 @@ impl CterminApp {
     fn apply_sidebar_action(&mut self, ctx: &egui::Context, action: SidebarAction) {
         let store = &self.repository.data;
         match action {
-            SidebarAction::Connect(id) => self.open_tab(ctx, PaneSource::Server(id)),
+            SidebarAction::Connect(id) => self.open_tab(ctx, PaneSource::Server { id }),
             SidebarAction::Reconnect(id) => self.reconnect_server(ctx, id),
             SidebarAction::ConnectFolder(id) => self.connect_folder(ctx, id),
             SidebarAction::AddServer(folder) => {
@@ -441,6 +543,14 @@ impl CterminApp {
                     }
                 }
             }
+            Dialog::Settings(mut form) => match dialogs::show_settings(ctx, id, &mut form) {
+                DialogResult::Open => Some(Dialog::Settings(form)),
+                DialogResult::Cancelled => None,
+                DialogResult::Confirmed => {
+                    self.apply_settings(ctx, form);
+                    None
+                }
+            },
             Dialog::AiSettings(mut form) => match dialogs::show_ai_settings(ctx, id, &mut form) {
                 DialogResult::Open => Some(Dialog::AiSettings(form)),
                 DialogResult::Cancelled => None,
@@ -499,8 +609,8 @@ impl CterminApp {
         let pane = self.panes.get(&pane)?;
         let session = pane.session.as_ref().ok()?;
         let environment = match pane.source {
-            PaneSource::Shell => "PowerShell on Windows".to_owned(),
-            PaneSource::Server(_) => format!(
+            PaneSource::Shell { shell } => shell.environment().to_owned(),
+            PaneSource::Server { .. } => format!(
                 "SSH session to server \"{}\". Judge the server's OS from the prompt line; it is \
                  usually Linux. This is not the local Windows machine.",
                 session.title()
@@ -764,11 +874,11 @@ impl CterminApp {
         let content = Rect::from_min_max(pos2(main.left(), bar.bottom()), main.max);
 
         let items = self.tab_items();
-        let groups = self.server_groups();
+        let menu = self.new_tab_menu();
         let active = self.tabs.active_index();
         let action = ui
             .scope_builder(UiBuilder::new().max_rect(bar), |ui| {
-                tab_bar::show(ui, &items, active, &groups)
+                tab_bar::show(ui, &items, active, &menu)
             })
             .inner;
         if let Some(action) = action {
@@ -863,6 +973,12 @@ impl eframe::App for CterminApp {
         self.restart_active_if_requested(ctx);
     }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.session_file.data = self.session_snapshot();
+        // Nowhere left to show an error while closing; the next start just opens fresh.
+        let _ = self.session_file.save();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
@@ -881,14 +997,17 @@ mod tests {
 
     use super::*;
     use crate::ai::settings::AiSettings;
+    use crate::terminal::ColorScheme;
     use crate::ui::tab_bar::test_positions;
 
     const WIDTH: f32 = 800.0;
     const HEIGHT: f32 = 600.0;
     const TIMEOUT: Duration = Duration::from_secs(20);
 
-    fn cmd_shell() -> CommandBuilder {
-        CommandBuilder::new("cmd.exe")
+    fn test_config() -> ConfigFile {
+        let mut config = ConfigFile::default();
+        config.data.terminal.default_shell = ShellKind::Cmd;
+        config
     }
 
     /// Runs the app without a window, in the same order as eframe.
@@ -904,9 +1023,9 @@ mod tests {
             let ctx = egui::Context::default();
             let mut app = CterminApp::with_parts(
                 &ctx,
-                cmd_shell,
                 ServerRepository::default(),
-                ConfigFile::default(),
+                test_config(),
+                SessionFile::default(),
             );
             app.sidebar_visible = false;
             let mut harness = Self {
@@ -1649,7 +1768,7 @@ mod tests {
 
         // The server row sits below PowerShell; search for it from the top down.
         let mut offset = 44.0;
-        while harness.active_session().title() != "test-server" && offset < 120.0 {
+        while harness.active_session().title() != "test-server" && offset < 320.0 {
             let button = test_positions::dropdown(WIDTH, harness.count());
             harness.click(button);
             assert!(egui::Popup::is_any_open(&harness.ctx));
@@ -1801,7 +1920,7 @@ mod tests {
         open_bar(&mut harness);
         harness.app.tabs.open();
         let other = harness.app.tabs.active().expect("has a pane");
-        let spawned = harness.app.spawn_pane(&harness.ctx, PaneSource::Shell);
+        let spawned = harness.app.spawn_pane(&harness.ctx, saved_shell());
         harness.app.panes.insert(other, spawned);
 
         ai_answers(
@@ -1928,6 +2047,186 @@ mod tests {
             ProviderKind::ClaudeCode,
             "failed settings change nothing"
         );
+    }
+
+    fn saved_shell() -> PaneSource {
+        PaneSource::Shell {
+            shell: ShellKind::Cmd,
+        }
+    }
+
+    fn harness_with_session(session: SavedSession, restore: bool) -> Harness {
+        let mut config = ConfigFile::default();
+        config.data.terminal.default_shell = ShellKind::Cmd;
+        config.data.terminal.restore_session = restore;
+        let session_file = SessionFile::in_memory(session);
+        let ctx = egui::Context::default();
+        let mut app =
+            CterminApp::with_parts(&ctx, ServerRepository::default(), config, session_file);
+        app.sidebar_visible = false;
+        let mut harness = Harness {
+            ctx,
+            app,
+            time: 0.0,
+            size: vec2(WIDTH, HEIGHT),
+        };
+        harness.frame(Vec::new());
+        harness
+    }
+
+    #[test]
+    fn session_is_restored_with_tabs_and_splits() {
+        let mut first = Harness::new();
+        first.press(Key::D, ctrl_shift());
+        first.press(Key::T, Modifiers::CTRL);
+        first.press(Key::E, ctrl_shift());
+        first.press(Key::Tab, Modifiers::CTRL);
+        let saved = first.app.session_snapshot();
+
+        let restored = harness_with_session(saved.clone(), true);
+
+        assert_eq!(restored.app.tabs.pane_counts(), vec![2, 2]);
+        assert_eq!(restored.app.panes.len(), 4);
+        assert_eq!(restored.app.tabs.active_index(), saved.active);
+    }
+
+    #[test]
+    fn empty_session_opens_the_default_shell() {
+        let harness = harness_with_session(SavedSession::default(), true);
+        assert_eq!(harness.count(), 1);
+        assert_eq!(harness.active_session().title(), "cmd");
+    }
+
+    #[test]
+    fn disabled_restore_ignores_the_saved_session() {
+        let mut first = Harness::new();
+        first.press(Key::T, Modifiers::CTRL);
+        first.press(Key::T, Modifiers::CTRL);
+        let harness = harness_with_session(first.app.session_snapshot(), false);
+        assert_eq!(harness.count(), 1);
+    }
+
+    #[test]
+    fn saved_server_that_was_deleted_opens_the_default_shell() {
+        let mut first = Harness::new();
+        let id = add_refused_server(&mut first, "test-server", None);
+        sidebar_action(&mut first, SidebarAction::Connect(id));
+        let saved = first.app.session_snapshot();
+        assert_eq!(saved.tabs.len(), 2);
+
+        let harness = harness_with_session(saved, true);
+
+        assert_eq!(harness.count(), 2, "the server is gone in this repository");
+        assert_eq!(harness.active_session().title(), "cmd");
+    }
+
+    #[test]
+    fn saved_server_reconnects_when_it_still_exists() {
+        let mut first = Harness::new();
+        let id = add_refused_server(&mut first, "test-server", None);
+        sidebar_action(&mut first, SidebarAction::Connect(id));
+        let source = first.app.focused_source();
+        assert_eq!(source, PaneSource::Server { id });
+        assert_eq!(first.app.usable_source(source), source);
+        assert_eq!(first.app.usable_source(saved_shell()), saved_shell());
+    }
+
+    #[test]
+    fn settings_apply_to_open_panes_and_new_tabs() {
+        let mut harness = Harness::new();
+        let before = harness.active_session().term().columns();
+        let mut form = SettingsForm::new(&harness.app.config.data, String::new());
+        form.appearance.font_size = 24.0;
+        form.appearance.color_scheme = ColorScheme::Dracula;
+        form.terminal.default_shell = ShellKind::PowerShell;
+
+        let ctx = harness.ctx.clone();
+        harness.app.apply_settings(&ctx, form);
+        harness.frame(Vec::new());
+
+        assert!(harness.active_session().term().columns() < before);
+        assert_eq!(
+            harness.app.default_source(),
+            PaneSource::Shell {
+                shell: ShellKind::PowerShell
+            }
+        );
+    }
+
+    #[test]
+    fn opening_a_shell_from_the_menu_uses_that_shell() {
+        let mut harness = Harness::new();
+        let ctx = harness.ctx.clone();
+        harness
+            .app
+            .apply_tab_action(&ctx, TabAction::OpenShell(ShellKind::PowerShell));
+
+        assert_eq!(harness.count(), 2);
+        assert_eq!(harness.active_session().title(), "powershell");
+    }
+
+    #[test]
+    fn custom_shortcut_replaces_the_default() {
+        let mut config = ConfigFile::default();
+        config.data.terminal.default_shell = ShellKind::Cmd;
+        config.data.shortcuts.close_pane = "Ctrl+Shift+W".to_owned();
+        let ctx = egui::Context::default();
+        let app = CterminApp::with_parts(
+            &ctx,
+            ServerRepository::default(),
+            config,
+            SessionFile::default(),
+        );
+        let mut harness = Harness {
+            ctx,
+            app,
+            time: 0.0,
+            size: vec2(WIDTH, HEIGHT),
+        };
+        harness.press(Key::T, Modifiers::CTRL);
+
+        harness.press(Key::W, Modifiers::CTRL);
+        assert_eq!(
+            harness.count(),
+            2,
+            "plain Ctrl+W now belongs to the terminal"
+        );
+
+        harness.press(Key::W, ctrl_shift());
+        assert_eq!(harness.count(), 1);
+    }
+
+    #[test]
+    fn invalid_shortcut_falls_back_and_warns() {
+        let mut config = ConfigFile::default();
+        config.data.terminal.default_shell = ShellKind::Cmd;
+        config.data.shortcuts.new_tab = "Ctrl+Banana".to_owned();
+        let ctx = egui::Context::default();
+        let app = CterminApp::with_parts(
+            &ctx,
+            ServerRepository::default(),
+            config,
+            SessionFile::default(),
+        );
+        assert!(app
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains("Ctrl+Banana")));
+        let mut harness = Harness {
+            ctx,
+            app,
+            time: 0.0,
+            size: vec2(WIDTH, HEIGHT),
+        };
+        harness.press(Key::T, Modifiers::CTRL);
+        assert_eq!(harness.count(), 2);
+    }
+
+    #[test]
+    fn ctrl_comma_opens_settings() {
+        let mut harness = Harness::new();
+        harness.press(Key::Comma, Modifiers::CTRL);
+        assert!(matches!(harness.app.dialog, Some(Dialog::Settings(_))));
     }
 
     #[test]

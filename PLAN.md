@@ -69,17 +69,17 @@ Goal: lightweight (RAM under 50MB for one tab, binary under 15MB), fast, stable.
 - [x] Context: active server, OS, current folder
 - [x] Warning for dangerous commands (rm -rf, DROP, mkfs, format, etc.)
 - [x] AI provider choice: Claude Code (subscription quota) or a Claude API key, changeable in settings
-- [ ] More providers: OpenAI and Ollama (later, once the two providers above are stable)
 - [x] API key stored through keyring
 
 **Done when:** "check disk usage" puts `df -h` in the terminal, waiting for Enter.
 
 ## Phase 6 - Settings and Polish
-- [ ] Config in `%APPDATA%\ctermin\config.toml` (theme, font, default shell, shortcuts)
-- [ ] Save and restore sessions (last tabs and splits)
-- [ ] Shell choice: PowerShell, CMD, WSL, Git Bash
-- [ ] Windows installer (cargo-wix or Inno Setup)
-- [ ] ctermin icon and branding
+- [x] Config in `%APPDATA%\ctermin\config.toml` (theme, font, default shell, shortcuts)
+- [x] Save and restore sessions (last tabs and splits)
+- [x] Shell choice: PowerShell, CMD, WSL, Git Bash
+- [x] Windows installer (cargo-wix or Inno Setup)
+- [x] ctermin icon and branding
+- [ ] Code signing, so Smart App Control does not block the app (needs a certificate)
 
 ---
 

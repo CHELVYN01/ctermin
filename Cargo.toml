@@ -34,3 +34,6 @@ expect_used = "warn"
 lto = true
 codegen-units = 1
 strip = true
+
+[build-dependencies]
+winresource = "0.1.34"
